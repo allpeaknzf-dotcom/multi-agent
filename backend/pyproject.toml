@@ -1,0 +1,19 @@
+[project]
+name = "multiagent-backend"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=1.0.0",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "keyring>=25.7.0",
+    "openai>=3.3.1",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.3",
+    "sqlalchemy>=2.0.52",
+    "uvicorn[standard]>=0.52.4",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
