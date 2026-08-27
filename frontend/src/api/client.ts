@@ -25,6 +25,11 @@ export const api = {
       body: JSON.stringify({ name, description }),
     }),
   getProject: (id: number) => req<any>(`/api/projects/${id}`),
+  renameProject: (id: number, name: string) =>
+    req<any>(`/api/projects/${id}/rename`, {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    }),
   archiveProject: (id: number, archived: boolean) =>
     req<any>(`/api/projects/${id}/archive`, {
       method: "PUT",
@@ -39,6 +44,8 @@ export const api = {
     }),
   listSessions: (projectId: number) =>
     req<any[]>(`/api/projects/${projectId}/sessions`),
+  listRecentSessions: (limit = 30, archived = false) =>
+    req<any[]>(`/api/recent-sessions?limit=${limit}&archived=${archived}`),
 
   // Key 管理
   listKeys: () => req<any[]>("/api/keys"),
@@ -58,6 +65,12 @@ export const api = {
   listAgents: (projectId?: number) =>
     req<any[]>(`/api/agents${projectId ? `?project_id=${projectId}` : ""}`),
   getTemplates: () => req<any[]>("/api/agent-templates"),
+  createTemplate: (body: any) =>
+    req<any>("/api/agent-templates", { method: "POST", body: JSON.stringify(body) }),
+  updateTemplate: (id: number, body: any) =>
+    req<any>(`/api/agent-templates/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteTemplate: (id: number) =>
+    req<any>(`/api/agent-templates/${id}`, { method: "DELETE" }),
   createAgent: (body: any) =>
     req<any>("/api/agents", { method: "POST", body: JSON.stringify(body) }),
   updateAgent: (id: number, body: any) =>
@@ -69,6 +82,16 @@ export const api = {
   createSession: (body: any) =>
     req<any>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   getSession: (id: number) => req<any>(`/api/sessions/${id}`),
+  renameSession: (id: number, title: string) =>
+    req<any>(`/api/sessions/${id}/rename`, {
+      method: "PUT",
+      body: JSON.stringify({ name: title }),
+    }),
+  moveSession: (id: number, projectId: number | null) =>
+    req<any>(`/api/sessions/${id}/move`, {
+      method: "PUT",
+      body: JSON.stringify({ project_id: projectId }),
+    }),
   archiveSession: (id: number, archived: boolean) =>
     req<any>(`/api/sessions/${id}/archive`, {
       method: "PUT",
@@ -98,6 +121,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ task_description: taskDescription }),
     }),
+  pauseTask: (id: number) => req<any>(`/api/tasks/${id}/pause`, { method: "POST" }),
+  resumeTask: (id: number) => req<any>(`/api/tasks/${id}/resume`, { method: "POST" }),
   runCode: (id: number, code: string, language = "python", timeout = 60) =>
     req<any>(`/api/sessions/${id}/run-code`, {
       method: "POST",
@@ -105,7 +130,26 @@ export const api = {
     }),
 
   // 产物
-  listArtifacts: (id: number) => req<any[]>(`/api/sessions/${id}/artifacts`),
+  listArtifacts: (id: number, folder?: string) =>
+    req<any[]>(
+      `/api/sessions/${id}/artifacts${
+        folder !== undefined ? `?folder=${encodeURIComponent(folder)}` : ""
+      }`
+    ),
+  listArtifactFolders: (id: number) =>
+    req<any>(`/api/sessions/${id}/artifact-folders`),
+  extractArtifacts: (id: number) =>
+    req<any>(`/api/sessions/${id}/extract-artifacts`, {
+      method: "POST",
+    }),
+  deleteArtifact: (artifactId: number) =>
+    req<any>(`/api/artifacts/${artifactId}`, {
+      method: "DELETE",
+    }),
+  deleteArtifactFolder: (sessionId: number, folder: string) =>
+    req<any>(`/api/sessions/${sessionId}/artifact-folders/${encodeURIComponent(folder)}`, {
+      method: "DELETE",
+    }),
   artifactDownloadUrl: (artifactId: number) =>
     `${BASE}/api/artifacts/${artifactId}/download`,
   fetchArtifact: (artifactId: number) => fetch(`${BASE}/api/artifacts/${artifactId}/download`),

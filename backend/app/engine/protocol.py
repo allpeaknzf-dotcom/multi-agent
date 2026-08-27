@@ -19,6 +19,7 @@ TASK_PENDING = "pending"
 TASK_RUNNING = "running"
 TASK_REVIEWING = "reviewing"
 TASK_REVISING = "revising"
+TASK_PAUSED = "paused"
 TASK_DONE = "done"
 TASK_CANCELLED = "cancelled"
 

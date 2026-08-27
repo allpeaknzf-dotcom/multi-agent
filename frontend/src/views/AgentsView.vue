@@ -3,9 +3,10 @@ import { computed, h, onMounted, ref, watch } from "vue";
 import { NButton, useMessage } from "naive-ui";
 import { api } from "../api/client";
 
+const emit = defineEmits<{ (e: "go-templates"): void }>();
+
 const message = useMessage();
 
-const tab = ref("agents");
 const agents = ref<any[]>([]);
 const keys = ref<any[]>([]);
 const templates = ref<any[]>([]);
@@ -43,11 +44,6 @@ const keyOptions = computed(() =>
     model: k.model,
   }))
 );
-
-// Key 表单（新增 / 编辑共用）
-const showKeyModal = ref(false);
-const editingKeyId = ref<number | null>(null);
-const keyForm = ref<any>({ name: "", provider: "openai", model: "", api_key: "", base_url: "" });
 
 async function load() {
   try {
@@ -144,187 +140,50 @@ async function removeAgent(a: any) {
   }
 }
 
-// ---------- Key ----------
-function openCreateKey() {
-  editingKeyId.value = null;
-  keyForm.value = { name: "", provider: "openai", model: "", api_key: "", base_url: "" };
-  showKeyModal.value = true;
-}
-
-function openEditKey(k: any) {
-  editingKeyId.value = k.id;
-  keyForm.value = {
-    name: k.name,
-    provider: k.provider,
-    model: k.model || "",
-    api_key: "",
-    base_url: k.base_url || "",
-  };
-  // 回显已保存的 Key（明文从钥匙串取回，输入框以密码掩码显示，可点眼睛查看）
-  api
-    .getKeyValue(k.id)
-    .then(({ value }) => {
-      keyForm.value.api_key = value || "";
-    })
-    .catch(() => {
-      /* 取不到明文时留空 */
-    });
-  showKeyModal.value = true;
-}
-
-async function saveKey() {
-  try {
-    if (editingKeyId.value) {
-      await api.updateKey(editingKeyId.value, {
-        name: keyForm.value.name,
-        provider: keyForm.value.provider,
-        model: keyForm.value.model || undefined,
-        base_url: keyForm.value.base_url || undefined,
-        api_key: keyForm.value.api_key || undefined,
-      });
-      message.success("Key 已更新");
-    } else {
-      await api.createKey({
-        name: keyForm.value.name,
-        provider: keyForm.value.provider,
-        model: keyForm.value.model || undefined,
-        api_key: keyForm.value.api_key,
-        base_url: keyForm.value.base_url || undefined,
-      });
-      message.success("Key 已保存（加密存储到系统钥匙串）");
-    }
-    showKeyModal.value = false;
-    load();
-  } catch (e: any) {
-    message.error(e.message || "保存失败");
-  }
-}
-
-async function copyKey(k: any) {
-  // 复制一份一模一样的配置：名称加"（复制）"
-  try {
-    const { value } = await api.getKeyValue(k.id);
-    if (!value) {
-      message.error("未找到 Key 明文，无法复制");
-      return;
-    }
-    await api.createKey({
-      name: `${k.name}（复制）`,
-      provider: k.provider,
-      model: k.model,
-      api_key: value,
-      base_url: k.base_url || undefined,
-    });
-    message.success("已复制为一份相同配置");
-    load();
-  } catch (e: any) {
-    message.error(e.message || "复制失败");
-  }
-}
-
-const testingKeyId = ref<number | null>(null);
-async function testKey(k: any) {
-  testingKeyId.value = k.id;
-  try {
-    const res = await api.testKey(k.id);
-    if (res.ok) {
-      message.success(`连接正常：${res.reply}`);
-    } else {
-      message.error(`连接失败：${res.error}`);
-    }
-  } catch (e: any) {
-    message.error(e.message || "测试失败");
-  } finally {
-    testingKeyId.value = null;
-  }
-}
-
-async function removeKey(k: any) {
-  try {
-    await api.deleteKey(k.id);
-    message.success("Key 已删除");
-    load();
-  } catch (e: any) {
-    message.error(e.message || "删除失败");
-  }
-}
-
 onMounted(load);
+
+// 供父组件（岗位模板页"用此模板新建 Agent"）调用
+defineExpose({ openCreateAgent });
 </script>
 
 <template>
   <div class="page">
     <div class="page-title">Agent 管理</div>
 
-    <n-tabs v-model:value="tab">
-      <!-- Agent 列表 -->
-      <n-tab-pane name="agents" tab="我的 Agent">
-        <n-space justify="space-between" style="margin-bottom: 12px">
-          <n-space>
-            <n-button type="primary" @click="openCreateAgent()">新建 Agent</n-button>
-            <n-dropdown
-              trigger="click"
-              :options="templates.map((t, i) => ({ label: `导入模板：${t.name}`, key: String(i) }))"
-              @select="(key: any) => openCreateAgent(templates[Number(key)])"
-            >
-              <n-button>从模板导入</n-button>
-            </n-dropdown>
-          </n-space>
-        </n-space>
+    <n-space justify="space-between" style="margin-bottom: 12px">
+      <n-space>
+        <n-button type="primary" @click="openCreateAgent()">新建 Agent</n-button>
+        <n-dropdown
+          trigger="click"
+          :options="templates.map((t, i) => ({ label: t.name, key: String(i) }))"
+          @select="(key: any) => openCreateAgent(templates[Number(key)])"
+        >
+          <n-button>从模板导入</n-button>
+        </n-dropdown>
+        <n-button @click="emit('go-templates')">模板管理</n-button>
+      </n-space>
+    </n-space>
 
-        <n-empty v-if="agents.length === 0" description="还没有 Agent，点左上角创建" />
-        <n-data-table
-          v-else
-          :columns="[
-            { title: '名称', key: 'name' },
-            { title: 'Provider', key: 'provider', width: 120 },
-            { title: '模型', key: 'model' },
-            { title: '角色', key: 'role_hint', ellipsis: { tooltip: true } },
-            {
-              title: '操作', key: 'ops', width: 140,
-              render: (row: any) =>
-                h('div', { style: 'display:flex;gap:4px' }, [
-                  h(NButton, { size: 'small', quaternary: true, onClick: () => openEditAgent(row) }, { default: () => '编辑' }),
-                  h(NButton, { size: 'small', type: 'error', quaternary: true, onClick: () => removeAgent(row) }, { default: () => '删除' }),
-                ]),
-            },
-          ]"
-          :data="agents"
-          :row-key="(r: any) => r.id"
-        />
-      </n-tab-pane>
-
-      <!-- Key 管理 -->
-      <n-tab-pane name="keys" tab="API Key 管理">
-        <n-space justify="space-between" style="margin-bottom: 12px">
-          <n-button type="primary" @click="openCreateKey">新增 API Key</n-button>
-        </n-space>
-        <n-alert type="info" style="margin-bottom: 12px">
-          Key 会加密存储到系统钥匙串（macOS Keychain），数据库中不保存明文。
-          火山方舟需要在"自定义地址"填写你的专属 endpoint（https://ark.cn-beijing.volces.com/api/v3）。
-          若使用 OpenAI 兼容网关，请选择 OpenAI Provider 并填写网关地址。
-        </n-alert>
-        <n-data-table
-          :columns="[
-            { title: '名称', key: 'name' },
-            { title: 'Provider', key: 'provider', width: 140 },
-            { title: '自定义地址', key: 'base_url', ellipsis: { tooltip: true } },
-            {
-              title: '操作', key: 'ops', width: 260,
-              render: (row: any) =>
-                h('div', { style: 'display:flex;gap:4px' }, [
-                  h(NButton, { size: 'small', quaternary: true, onClick: () => openEditKey(row) }, { default: () => '编辑' }),
-                  h(NButton, { size: 'small', quaternary: true, onClick: () => copyKey(row) }, { default: () => '复制' }),
-                  h(NButton, { size: 'small', quaternary: true, loading: testingKeyId === row.id, onClick: () => testKey(row) }, { default: () => '测试' }),
-                  h(NButton, { size: 'small', type: 'error', quaternary: true, onClick: () => removeKey(row) }, { default: () => '删除' }),
-                ]),
-            },
-          ]"
-          :data="keys"
-          :row-key="(r: any) => r.id"
-        />
-      </n-tab-pane>
-    </n-tabs>
+    <n-empty v-if="agents.length === 0" description="还没有 Agent，点左上角创建" />
+    <n-data-table
+      v-else
+      :columns="[
+        { title: '名称', key: 'name' },
+        { title: 'Provider', key: 'provider', width: 120 },
+        { title: '模型', key: 'model' },
+        { title: '角色', key: 'role_hint', ellipsis: { tooltip: true } },
+        {
+          title: '操作', key: 'ops', width: 140,
+          render: (row: any) =>
+            h('div', { style: 'display:flex;gap:4px' }, [
+              h(NButton, { size: 'small', quaternary: true, onClick: () => openEditAgent(row) }, { default: () => '编辑' }),
+              h(NButton, { size: 'small', type: 'error', quaternary: true, onClick: () => removeAgent(row) }, { default: () => '删除' }),
+            ]),
+        },
+      ]"
+      :data="agents"
+      :row-key="(r: any) => r.id"
+    />
 
     <!-- Agent 表单 -->
     <n-modal v-model:show="showAgentModal" preset="card" :title="editingId ? '编辑 Agent' : '新建 Agent'" style="width: 560px">
@@ -355,33 +214,6 @@ onMounted(load);
         <n-space justify="end">
           <n-button @click="showAgentModal = false">取消</n-button>
           <n-button type="primary" @click="saveAgent">保存</n-button>
-        </n-space>
-      </template>
-    </n-modal>
-
-    <!-- Key 表单 -->
-    <n-modal v-model:show="showKeyModal" preset="card" :title="editingKeyId ? '编辑 API Key' : '新增 API Key'" style="width: 560px">
-      <n-form label-placement="top">
-        <n-form-item label="名称">
-          <n-input v-model:value="keyForm.name" placeholder="例如：我的 DeepSeek 网关" />
-        </n-form-item>
-        <n-form-item label="Provider">
-          <n-select v-model:value="keyForm.provider" :options="providerOptions.filter((p) => p.value !== 'ollama')" />
-        </n-form-item>
-        <n-form-item label="默认模型（新建 Agent 时自动带出）">
-          <n-input v-model:value="keyForm.model" placeholder="例如 deepseek-v4-flash / gpt-4o / claude-sonnet-4" />
-        </n-form-item>
-        <n-form-item label="API Key">
-          <n-input v-model:value="keyForm.api_key" type="password" show-password-on="click" :placeholder="editingKeyId ? '已回显保存的 Key，如需修改请直接编辑' : '粘贴你的 Key'" />
-        </n-form-item>
-        <n-form-item label="自定义地址">
-          <n-input v-model:value="keyForm.base_url" placeholder="OpenAI 兼容网关 / 火山方舟填这里" />
-        </n-form-item>
-      </n-form>
-      <template #footer>
-        <n-space justify="end">
-          <n-button @click="showKeyModal = false">取消</n-button>
-          <n-button type="primary" @click="saveKey">保存</n-button>
         </n-space>
       </template>
     </n-modal>

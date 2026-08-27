@@ -6,9 +6,12 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.orm import Session as DbSession
 
@@ -45,6 +48,7 @@ from .protocol import (
     SENDER_SYSTEM,
     SENDER_USER,
     TASK_DONE,
+    TASK_PAUSED,
     TASK_REVIEWING,
     TASK_REVISING,
     TASK_RUNNING,
@@ -92,6 +96,7 @@ class ChatManager:
         recipient: str = "all",
         parent_id: int | None = None,
         meta: dict | None = None,
+        folder: str | None = None,
     ) -> Message:
         m = Message(
             session_id=session.id,
@@ -107,6 +112,18 @@ class ChatManager:
         self.db.add(m)
         self.db.commit()
         self.db.refresh(m)
+        # [代码产物化] 自动落盘：成员代码消息里的代码块自动保存为产物文件
+        if sender_type == SENDER_AGENT and msg_type != MSG_SYSTEM:
+            art_ids = self._persist_code_from_message(
+                session.id,
+                content,
+                msg_type,
+                task_id=(meta or {}).get("task_id"),
+                folder=folder,
+            )
+            if art_ids:
+                m.meta = {**(m.meta or {}), "artifact_ids": art_ids}
+                self.db.commit()
         self._push_message(m)
         return m
 
@@ -287,114 +304,90 @@ class ChatManager:
         self,
         session_id: int,
         task_description: str,
+        root_id: int | None = None,
     ) -> Task:
+        """派活/续跑：root_id 为空则新建根任务；否则从暂停处继续（跳过已完成子任务）。"""
         session = self._get_session(session_id)
         host = self._get_host(session)
         if not host:
             raise ValueError("该会话尚未设置主理人，请先指定主理人再派活。")
 
-        root = Task(
-            session_id=session.id,
-            title=task_description,
-            description=task_description,
-            assignee_agent_id=host.id,
-            status=TASK_RUNNING,
-        )
-        self.db.add(root)
-        self.db.commit()
-        self.db.refresh(root)
-        await self._push_task(session.id, root)
-
-        await self._status(session, f"用户下达任务，主理人「{host.name}」接管。")
+        done_titles: set[str] = set()
+        if root_id is not None:
+            # 续跑：加载已暂停的根任务，置回执行中
+            root = self.db.get(Task, root_id)
+            if not root:
+                raise ValueError("任务不存在")
+            root.status = TASK_RUNNING
+            self.db.commit()
+            await self._push_task(session.id, root)
+            done_titles = {
+                c.title
+                for c in self.db.query(Task)
+                .filter(Task.parent_task_id == root.id)
+                .all()
+                if c.status == TASK_DONE
+            }
+            await self._status(session, "任务已恢复，继续执行剩余子任务…")
+        else:
+            root = Task(
+                session_id=session.id,
+                title=task_description,
+                description=task_description,
+                assignee_agent_id=host.id,
+                status=TASK_RUNNING,
+                folder=self._make_folder(task_description),
+            )
+            self.db.add(root)
+            self.db.commit()
+            self.db.refresh(root)
+            await self._push_task(session.id, root)
+            await self._status(
+                session,
+                f"用户下达任务，主理人「{host.name}」接管。"
+                f"已为该项目创建产物文件夹「{root.folder}」。",
+            )
 
         # 1. 拆解
         plans = await self.orch.plan(session, host, task_description)
-        results: list[tuple[str, str]] = []
 
-        # 2. 逐子任务执行 + 验收
-        for idx, plan in enumerate(plans, start=1):
-            assignee = plan["assignee"]
-            task = Task(
-                session_id=session.id,
-                title=plan["title"],
-                description=plan["description"],
-                assignee_agent_id=assignee.id,
-                parent_task_id=root.id,
-                status=TASK_RUNNING,
-                round=0,
-                max_rounds=3,
-            )
-            self.db.add(task)
-            self.db.commit()
-            self.db.refresh(task)
-            await self._push_task(session.id, task)
+        # 2. 并行执行所有子任务 + 验收（互不依赖的子任务并发跑）
+        pending_plans = [p for p in plans if p["title"] not in done_titles]
+        if pending_plans:
             await self._status(
                 session,
-                f"[{idx}/{len(plans)}] 派发子任务「{task.title}」给「{assignee.name}」…",
+                f"共 {len(pending_plans)} 个子任务，并行派发给各成员执行…",
             )
 
-            content = ""
-            passed = False
-            for rnd in range(1, task.max_rounds + 1):
-                task.round = rnd
-                self.db.commit()
-                try:
-                    content = await self._ask_agent(
-                        session, assignee, "", task=task
-                    )
-                except ProviderError as exc:
-                    self._save_and_push(
-                        session,
-                        sender_type=SENDER_SYSTEM,
-                        sender_id=None,
-                        sender_name="系统",
-                        content=f"Agent「{assignee.name}」执行失败：{exc}",
-                        msg_type=MSG_SYSTEM,
-                    )
-                    break
+        async def _run_one(plan: dict):
+            # 每个子任务在独立 DB 会话中执行，避免并行写冲突
+            return await self._execute_subtask(root, plan, session.id)
 
-                # 产出入库（代码或文本）
-                msg_type = MSG_CODE if self._looks_like_code(content) else MSG_TEXT
-                self._save_and_push(
-                    session,
-                    sender_type=SENDER_AGENT,
-                    sender_id=assignee.id,
-                    sender_name=assignee.name,
-                    content=content,
-                    msg_type=msg_type,
-                    parent_id=root.id,
-                    meta={"task_id": task.id},
-                )
+        outcomes = await asyncio.gather(
+            *[_run_one(p) for p in pending_plans],
+            return_exceptions=True,
+        )
 
-                # 验收
-                task.status = TASK_REVIEWING
-                self.db.commit()
-                await self._push_task(session.id, task)
-                passed, comment = await self.orch.review(
-                    session, host, task, content
-                )
-                if passed:
-                    task.status = TASK_DONE
-                    self.db.commit()
-                    await self._push_task(session.id, task)
-                    await self._status(
-                        session,
-                        f"子任务「{task.title}」验收通过。",
-                    )
-                    break
-                # 未通过：退回
-                task.status = TASK_REVISING
-                self.db.commit()
-                await self._push_task(session.id, task)
-                await self._status(
-                    session,
-                    f"子任务「{task.title}」未通过验收（第 {rnd} 轮）：{comment}",
-                )
-                if rnd >= task.max_rounds:
-                    break
-
+        results_map: dict[int, tuple[str, str]] = {}
+        paused = self._task_paused(root.id)
+        for idx, o in enumerate(outcomes):
+            if isinstance(o, Exception):
+                await self._status(session, f"子任务执行异常：{o}")
+                continue
+            title, content, status = o
             if content:
-                results.append((task.title, content))
+                results_map[idx] = (title, content)
+            if status == TASK_PAUSED:
+                paused = True
+        results = [results_map[i] for i in sorted(results_map)]
+
+        # 任一路径被暂停则整条流程暂停
+        if paused:
+            root.status = TASK_PAUSED
+            self.db.commit()
+            await self._push_task(session.id, root)
+            await self._status(session, "任务已暂停，可点「继续」恢复。")
+            return root
 
         # 3. 汇总
         if results:
@@ -417,6 +410,208 @@ class ChatManager:
         await self._push_task(session.id, root)
         await self._status(session, "任务流程结束。")
         return root
+
+    async def _execute_subtask(
+        self, root: Task, plan: dict, session_id: int
+    ) -> tuple[str, str, str]:
+        """在独立 DB 会话中执行单个子任务（并行安全）。
+
+        返回 (title, content, status)；status==paused 表示整体流程应暂停。
+        流程：执行 -> 产出 -> 沙箱运行（代码）-> 交叉评审 -> 主理人验收（可退回重做）。
+        """
+        from ..core.db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            mgr = ChatManager(db, self.bus)
+            session = db.get(ChatSession, session_id)
+            host = mgr._get_host(session)
+            assignee = plan["assignee"]
+            if not session or not assignee:
+                return (plan["title"], "", TASK_DONE)
+
+            task = Task(
+                session_id=session.id,
+                title=plan["title"],
+                description=plan["description"],
+                assignee_agent_id=assignee.id,
+                parent_task_id=root.id,
+                status=TASK_RUNNING,
+                round=0,
+                max_rounds=3,
+            )
+            db.add(task)
+            db.commit()
+            db.refresh(task)
+            await mgr._push_task(session.id, task)
+            await mgr._status(
+                session, f"派发子任务「{task.title}」给「{assignee.name}」…"
+            )
+
+            content = ""
+            for rnd in range(1, task.max_rounds + 1):
+                if mgr._task_paused(root.id) or mgr._task_paused(task.id):
+                    task.status = TASK_PAUSED
+                    db.commit()
+                    await mgr._push_task(session.id, task)
+                    await mgr._status(
+                        session, f"子任务「{task.title}」已暂停，可稍后继续。"
+                    )
+                    break
+                task.round = rnd
+                db.commit()
+                try:
+                    content = await mgr._ask_agent(session, assignee, "", task=task)
+                except ProviderError as exc:
+                    mgr._save_and_push(
+                        session,
+                        sender_type=SENDER_SYSTEM,
+                        sender_id=None,
+                        sender_name="系统",
+                        content=f"Agent「{assignee.name}」执行失败：{exc}",
+                        msg_type=MSG_SYSTEM,
+                    )
+                    break
+
+                # 产出入库（代码或文本）
+                msg_type = MSG_CODE if mgr._looks_like_code(content) else MSG_TEXT
+                mgr._save_and_push(
+                    session,
+                    sender_type=SENDER_AGENT,
+                    sender_id=assignee.id,
+                    sender_name=assignee.name,
+                    content=content,
+                    msg_type=msg_type,
+                    parent_id=root.id,
+                    meta={"task_id": task.id},
+                    folder=root.folder,
+                )
+
+                # [优化2] 代码类产出先跑沙箱，用运行结果辅助验收
+                run_output = None
+                if mgr._looks_like_code(content):
+                    run_output = await mgr._run_subtask_code(session, content)
+
+                # [优化3] 交叉评审：请一名非执行者成员审阅产出
+                peer_comment = await mgr._peer_review(
+                    session, host, assignee, task, content, run_output
+                )
+
+                # 主理人验收（结合运行结果 + 评审意见）
+                task.status = TASK_REVIEWING
+                db.commit()
+                await mgr._push_task(session.id, task)
+                passed, comment = await mgr.orch.review(
+                    session,
+                    host,
+                    task,
+                    content,
+                    run_output=run_output,
+                    peer_comment=peer_comment,
+                )
+                if passed:
+                    task.status = TASK_DONE
+                    db.commit()
+                    await mgr._push_task(session.id, task)
+                    await mgr._status(session, f"子任务「{task.title}」验收通过。")
+                    break
+                # 未通过：退回
+                task.status = TASK_REVISING
+                db.commit()
+                await mgr._push_task(session.id, task)
+                await mgr._status(
+                    session,
+                    f"子任务「{task.title}」未通过验收（第 {rnd} 轮）：{comment}",
+                )
+                if rnd >= task.max_rounds:
+                    break
+
+            return (task.title, content, task.status)
+        finally:
+            db.close()
+
+    async def _run_subtask_code(self, session: ChatSession, code: str) -> str | None:
+        """[优化2] 把子任务代码产出放到沙箱运行，返回可读的运行结果摘要。"""
+        try:
+            result = await run_code(code, language="python", timeout=60, use_docker=False)
+        except Exception as exc:  # noqa: BLE001
+            return f"运行失败：{exc}"
+        summary = (
+            f"（沙箱运行 · {result.duration_ms}ms"
+            + (" · 超时" if result.timed_out else "")
+            + f" · 退出码 {result.exit_code}）\n"
+            f"--- stdout ---\n{result.stdout[:2000]}\n"
+            f"--- stderr ---\n{result.stderr[:1500]}"
+        )
+        self._save_and_push(
+            session,
+            sender_type=SENDER_SYSTEM,
+            sender_id=None,
+            sender_name="沙箱",
+            content=summary,
+            msg_type=MSG_STATUS,
+        )
+        return summary
+
+    async def _peer_review(
+        self,
+        session: ChatSession,
+        host: Agent | None,
+        assignee: Agent,
+        task: Task,
+        content: str,
+        run_output: str | None,
+    ) -> str | None:
+        """[优化3] 请一名非执行者、非主理人的成员评审产出，返回评审意见（无合适评审者返回 None）。"""
+        members = self._active_members(session)
+        reviewers = [
+            a
+            for a in members
+            if a.id != assignee.id and (not host or a.id != host.id)
+        ]
+        if not reviewers:
+            return None
+        # 优先选名称带审查/评审/审阅/测试/质检的成员，否则取第一个
+        reviewer = next(
+            (
+                a
+                for a in reviewers
+                if any(k in a.name for k in ("审查", "评审", "审阅", "测试", "质检"))
+            ),
+            reviewers[0],
+        )
+        try:
+            prompt = (
+                "请作为评审者对该子任务的产出做质量评审（如代码审查、方案审阅），"
+                "简明扼要地指出问题与改进建议。\n"
+                f"子任务：{task.title}\n要求：{task.description}\n\n"
+                f"产出：\n{content[:6000]}"
+            )
+            if run_output:
+                prompt += f"\n\n运行结果：\n{run_output[:2000]}"
+            comment = await self._ask_agent(session, reviewer, prompt)
+            self._save_and_push(
+                session,
+                sender_type=SENDER_AGENT,
+                sender_id=reviewer.id,
+                sender_name=reviewer.name,
+                content=f"【评审意见】{comment}",
+                msg_type=MSG_TEXT,
+                parent_id=task.id,
+                meta={"task_id": task.id, "kind": "peer_review"},
+            )
+            return comment
+        except Exception:  # noqa: BLE001  评审失败不阻塞流程
+            return None
+
+    def _task_paused(self, task_id: int) -> bool:
+        """实时从数据库读取任务状态（跨请求会话），判断是否被暂停。"""
+        from sqlalchemy import select
+
+        status = self.db.execute(
+            select(Task.status).where(Task.id == task_id)
+        ).scalar()
+        return status == TASK_PAUSED
 
     @staticmethod
     def _looks_like_code(content: str) -> bool:
@@ -466,10 +661,231 @@ class ChatManager:
         ".cpp": "code",
     }
 
+    # 代码块语言 → 扩展名（用于代码产物命名）
+    _LANG_EXT = {
+        "python": "py", "py": "py",
+        "javascript": "js", "js": "js", "node": "js",
+        "typescript": "ts", "ts": "ts",
+        "html": "html", "htm": "html",
+        "css": "css",
+        "shell": "sh", "bash": "sh", "sh": "sh",
+        "java": "java", "go": "go", "rust": "rs", "rs": "rs",
+        "c": "c", "cpp": "cpp",
+        "json": "json", "sql": "sql",
+        "markdown": "md", "md": "md", "text": "txt", "txt": "txt",
+    }
+
+    @staticmethod
+    def _extract_code_blocks(content: str) -> list[dict[str, str]]:
+        """提取消息文本里的所有 ```lang ... ``` 代码块。"""
+        blocks: list[dict[str, str]] = []
+        for m in re.finditer(r"```([\w+-]*)\s*\n(.*?)```", content, re.DOTALL):
+            blocks.append(
+                {"language": (m.group(1) or "").strip(), "code": m.group(2).strip()}
+            )
+        return blocks
+
+    def _persist_code_from_message(
+        self,
+        session_id: int,
+        content: str,
+        msg_type: str,
+        task_id: int | None = None,
+        folder: str | None = None,
+    ) -> list[int]:
+        """从消息内容提取代码块并保存为产物文件；返回新增 Artifact id 列表。"""
+        blocks = self._extract_code_blocks(content)
+        if not blocks and msg_type == MSG_CODE:
+            blocks = [{"language": "python", "code": content}]
+        if not blocks:
+            return []
+        ts = int(time.time())
+        seen: set[str] = set()
+        art_ids: list[int] = []
+        art_dir = self._folder_art_dir(session_id, folder, "code")
+        for i, b in enumerate(blocks):
+            code = b["code"]
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            lang = (b["language"] or "").lower()
+            ext = self._LANG_EXT.get(lang, "txt")
+            name = f"code_{ts}_{i}.{ext}"
+            path = art_dir / name
+            try:
+                path.write_text(code, encoding="utf-8")
+            except OSError:
+                continue
+            art = self._persist_artifact(
+                session_id,
+                type="code",
+                name=name,
+                file_path=str(path),
+                language=lang or None,
+                task_id=task_id,
+                folder=folder,
+                meta={"kind": "extracted", "source": "auto"},
+            )
+            art_ids.append(art.id)
+        return art_ids
+
+    def extract_artifacts(
+        self, session_id: int, folder: str | None = None
+    ) -> list[int]:
+        """[一键提取] 扫描会话历史所有消息，把其中的代码块保存为产物文件。"""
+        folder = folder or f"提取代码_{int(time.time())}"
+        created: list[int] = []
+        msgs = self.db.query(Message).filter_by(session_id=session_id).all()
+        for m in msgs:
+            if m.sender_type != SENDER_AGENT or m.msg_type == MSG_SYSTEM:
+                continue
+            existing = set(m.meta.get("artifact_ids", [])) if m.meta else set()
+            art_ids = self._persist_code_from_message(
+                session_id,
+                m.content,
+                m.msg_type,
+                task_id=(m.meta or {}).get("task_id"),
+                folder=folder,
+            )
+            new_ids = [a for a in art_ids if a not in existing]
+            if new_ids:
+                m.meta = {**(m.meta or {}), "artifact_ids": list(existing) + new_ids}
+                created.extend(new_ids)
+        self.db.commit()
+        return created
+
+    def list_artifact_folders(self, session_id: int) -> dict[str, Any]:
+        """按文件夹分组统计产物，供右侧面板按文件夹展示。"""
+        from sqlalchemy import func
+
+        rows = (
+            self.db.query(
+                Artifact.folder,
+                func.count(Artifact.id),
+                func.max(Artifact.created_at),
+            )
+            .filter(Artifact.session_id == session_id)
+            .group_by(Artifact.folder)
+            .all()
+        )
+        folders = []
+        for folder, count, updated_at in rows:
+            if not folder:
+                continue
+            folders.append(
+                {
+                    "folder": folder,
+                    "count": count,
+                    "updated_at": updated_at,
+                }
+            )
+        folders.sort(key=lambda x: x["updated_at"] or datetime.min, reverse=True)
+        ungrouped = (
+            self.db.query(Artifact)
+            .filter(
+                Artifact.session_id == session_id,
+                Artifact.folder.is_(None),
+            )
+            .count()
+        )
+        return {"folders": folders, "ungrouped": ungrouped}
+
+    def delete_artifact(self, artifact_id: int) -> bool:
+        """删除单个产物（数据库记录 + 磁盘文件）。"""
+        art = self.db.get(Artifact, artifact_id)
+        if not art:
+            return False
+        path = Path(art.file_path).resolve()
+        if str(path).startswith(str(ARTIFACT_DIR.resolve())) and path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        self.db.delete(art)
+        self.db.commit()
+        return True
+
+    def delete_artifact_folder(self, session_id: int, folder: str) -> int:
+        """删除整个项目文件夹（含其下所有产物文件 + 数据库记录）。"""
+        # 防路径穿越：folder 必须是单级合法名称
+        if not folder or "/" in folder or "\\" in folder or ".." in folder:
+            return 0
+        arts = (
+            self.db.query(Artifact)
+            .filter_by(session_id=session_id, folder=folder)
+            .all()
+        )
+        n = 0
+        for art in arts:
+            path = Path(art.file_path).resolve()
+            if str(path).startswith(str(ARTIFACT_DIR.resolve())) and path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            self.db.delete(art)
+            n += 1
+        self.db.commit()
+        # 尝试删除已清空的文件夹目录（含分类子目录）
+        root = self._session_art_dir(session_id) / folder
+        try:
+            if root.is_dir():
+                for sub in sorted(root.iterdir(), reverse=True):
+                    if sub.is_dir() and not any(sub.iterdir()):
+                        sub.rmdir()
+                if not any(root.iterdir()):
+                    root.rmdir()
+        except OSError:
+            pass
+        return n
+
     def _session_art_dir(self, session_id: int) -> Path:
         d = ARTIFACT_DIR / f"session_{session_id}"
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def _folder_art_dir(
+        self, session_id: int, folder: str | None, subtype: str | None = None
+    ) -> Path:
+        """返回产物目录；folder 非空时归入项目子目录，subtype 进一步分类（code/docs/output/images）。"""
+        base = self._session_art_dir(session_id)
+        if not folder:
+            d = base
+        else:
+            d = base / folder
+        if subtype:
+            d = d / subtype
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    # 常见的任务动词前缀，生成短文件夹名时去掉
+    _VERB_PREFIXES = (
+        "开发一个", "实现一个", "设计一个", "搭建一个", "生成一个", "构建一个",
+        "做一个", "写一个", "搞一个", "制作一个", "创建一个", "做一个",
+        "开发", "实现", "设计", "搭建", "生成", "构建", "编写", "创建",
+        "制作", "完成", "帮我", "请", "给一个", "写", "做",
+    )
+
+    def _make_folder(self, title: str) -> str:
+        """生成简短语义化的项目文件夹名（去动词前缀+截短；重名自动加序号）。"""
+        t = re.sub(r"[^\w\u4e00-\u9fff]+", "", title or "")
+        for p in self._VERB_PREFIXES:
+            if t.startswith(p):
+                t = t[len(p):]
+                break
+        base = t[:8] or "任务"
+        existing = {
+            f[0]
+            for f in self.db.query(Task.folder)
+            .filter(Task.folder.isnot(None))
+            .all()
+        }
+        name = base
+        n = 2
+        while name in existing:
+            name = f"{base}({n})"
+            n += 1
+        return name
 
     def _persist_artifact(
         self,
@@ -480,6 +896,7 @@ class ChatManager:
         file_path: str,
         language: str | None = None,
         task_id: int | None = None,
+        folder: str | None = None,
         meta: dict | None = None,
     ) -> Artifact:
         art = Artifact(
@@ -489,6 +906,7 @@ class ChatManager:
             name=name,
             file_path=file_path,
             language=language,
+            folder=folder,
             meta=meta or {},
         )
         self.db.add(art)
@@ -497,14 +915,19 @@ class ChatManager:
         return art
 
     def _save_code_artifact(
-        self, session_id: int, code: str, language: str, task_id: int | None = None
+        self,
+        session_id: int,
+        code: str,
+        language: str,
+        task_id: int | None = None,
+        folder: str | None = None,
     ) -> Artifact:
         ext = {"python": "py", "node": "js", "shell": "sh", "sh": "sh"}.get(
             language, "txt"
         )
         ts = int(time.time())
         name = f"code_{ts}.{ext}"
-        path = self._session_art_dir(session_id) / name
+        path = self._folder_art_dir(session_id, folder, "code") / name
         path.write_text(code, encoding="utf-8")
         return self._persist_artifact(
             session_id,
@@ -513,11 +936,16 @@ class ChatManager:
             file_path=str(path),
             language=language,
             task_id=task_id,
+            folder=folder,
             meta={"kind": "source"},
         )
 
     def _save_output_artifact(
-        self, session_id: int, result: object, task_id: int | None = None
+        self,
+        session_id: int,
+        result: object,
+        task_id: int | None = None,
+        folder: str | None = None,
     ) -> Artifact:
         text = (
             f"--- stdout ---\n{result.stdout}\n"
@@ -527,7 +955,7 @@ class ChatManager:
         )
         ts = int(time.time())
         name = f"output_{ts}.txt"
-        path = self._session_art_dir(session_id) / name
+        path = self._folder_art_dir(session_id, folder, "output") / name
         path.write_text(text, encoding="utf-8")
         return self._persist_artifact(
             session_id,
@@ -535,6 +963,7 @@ class ChatManager:
             name=name,
             file_path=str(path),
             task_id=task_id,
+            folder=folder,
             meta={
                 "kind": "run_output",
                 "exit_code": result.exit_code,
@@ -543,7 +972,7 @@ class ChatManager:
         )
 
     def _scan_workdir_artifacts(
-        self, session_id: int, workdir: str | None
+        self, session_id: int, workdir: str | None, folder: str | None = None
     ) -> list[Artifact]:
         """登记沙箱工作目录里由代码生成的附加文件（图片/文档等）。"""
         if not workdir:
@@ -561,6 +990,7 @@ class ChatManager:
                             type=art_type,
                             name=p.name,
                             file_path=str(p.resolve()),
+                            folder=folder,
                             meta={
                                 "kind": "sandbox_file",
                                 "size": p.stat().st_size,
@@ -598,11 +1028,11 @@ class ChatManager:
         session = self._get_session(session_id)
         result = await run_code(code, language=language, timeout=timeout, use_docker=use_docker)
 
-        # 产物沉淀：源代码 / 运行输出 / 沙箱生成的附加文件
+        # 产物沉淀：源代码 / 运行输出 / 沙箱生成的附加文件（归入「运行测试」文件夹）
         try:
-            self._save_code_artifact(session.id, code, language)
-            self._save_output_artifact(session.id, result)
-            self._scan_workdir_artifacts(session.id, result.workdir)
+            self._save_code_artifact(session.id, code, language, folder="运行测试")
+            self._save_output_artifact(session.id, result, folder="运行测试")
+            self._scan_workdir_artifacts(session.id, result.workdir, folder="运行测试")
         except Exception:  # noqa: BLE001  产物登记失败不影响运行结果
             self.db.rollback()
 

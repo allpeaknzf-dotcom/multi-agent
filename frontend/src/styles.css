@@ -51,6 +51,78 @@ body,
   padding: 0;
 }
 
+/* markdown 渲染补充样式 */
+.msg-content h1,
+.msg-content h2,
+.msg-content h3,
+.msg-content h4 {
+  margin: 10px 0 6px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.msg-content h1 {
+  font-size: 18px;
+}
+.msg-content h2 {
+  font-size: 16px;
+}
+.msg-content h3 {
+  font-size: 15px;
+}
+.msg-content h4 {
+  font-size: 14px;
+}
+.msg-content ul,
+.msg-content ol {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+.msg-content li {
+  margin: 2px 0;
+}
+.msg-content blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid #d1d5db;
+  color: #6b7280;
+  background: #f9fafb;
+  border-radius: 0 6px 6px 0;
+}
+.msg-content hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 10px 0;
+}
+.msg-content a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+.msg-content table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.msg-content th,
+.msg-content td {
+  border: 1px solid #e5e7eb;
+  padding: 6px 10px;
+  text-align: left;
+  min-width: 60px;
+  word-break: normal;
+  white-space: normal;
+}
+.msg-content th {
+  background: #f3f4f6;
+  font-weight: 600;
+}
+.msg-content input[type="checkbox"] {
+  margin-right: 4px;
+}
+
 /* 滚动条 */
 ::-webkit-scrollbar {
   width: 8px;

@@ -74,13 +74,31 @@ class Agent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
+class AgentTemplate(Base):
+    """Agent 模板：预置 + 用户自定义，支持增删改查。"""
+
+    __tablename__ = "agent_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), default="openai")
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    role_hint: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    system_prompt: Mapped[str] = mapped_column(Text, default="")
+    is_builtin: Mapped[bool] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
 class ChatSession(Base):
     """会话（群聊）。"""
 
     __tablename__ = "chat_sessions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id"), nullable=True
+    )
     title: Mapped[str] = mapped_column(String(120), default="新会话")
     orchestrator_agent_id: Mapped[int | None] = mapped_column(
         ForeignKey("agents.id"), nullable=True
@@ -162,6 +180,7 @@ class Task(Base):
     result_msg_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     round: Mapped[int] = mapped_column(Integer, default=0)
     max_rounds: Mapped[int] = mapped_column(Integer, default=3)
+    folder: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -182,5 +201,6 @@ class Artifact(Base):
     name: Mapped[str] = mapped_column(String(200), default="")
     file_path: Mapped[str] = mapped_column(String(500), default="")
     language: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    folder: Mapped[str | None] = mapped_column(String(200), nullable=True)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

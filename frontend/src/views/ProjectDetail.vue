@@ -3,6 +3,7 @@ import { onMounted, ref, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDialog, useMessage } from "naive-ui";
 import { api } from "../api/client";
+import NewSessionModal from "../components/NewSessionModal.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -12,22 +13,27 @@ const dialog = useDialog();
 const projectId = Number(route.params.id);
 const project = ref<any>(null);
 const sessions = ref<any[]>([]);
-const agents = ref<any[]>([]);
 const loading = ref(false);
 const filter = ref<"active" | "archived">("active");
 const searchQuery = ref("");
 
-// 新建会话
 const showCreate = ref(false);
-const newTitle = ref("");
-const selectedAgentIds = ref<number[]>([]);
-const selectedHostId = ref<number | null>(null);
 
-const hostOptions = computed(() =>
-  agents.value
-    .filter((a) => selectedAgentIds.value.includes(a.id))
-    .map((a) => ({ label: a.name, value: a.id }))
-);
+// 重命名
+const showRename = ref(false);
+const newName = ref("");
+
+async function rename() {
+  if (!newName.value.trim()) return;
+  try {
+    await api.renameProject(projectId, newName.value.trim());
+    message.success("已重命名");
+    showRename.value = false;
+    load();
+  } catch (e: any) {
+    message.error(e.message || "重命名失败");
+  }
+}
 
 const visibleSessions = computed(() =>
   sessions.value.filter((s) => {
@@ -50,7 +56,6 @@ async function load() {
   try {
     project.value = await api.getProject(projectId);
     sessions.value = await api.listSessions(projectId);
-    agents.value = await api.listAgents(projectId);
   } catch (e: any) {
     message.error(e.message || "加载失败");
   } finally {
@@ -58,27 +63,10 @@ async function load() {
   }
 }
 
-async function createSession() {
-  if (selectedAgentIds.value.length === 0) {
-    message.warning("请至少选择一个 Agent");
-    return;
-  }
-  try {
-    const s = await api.createSession({
-      project_id: projectId,
-      title: newTitle.value || `会话 ${sessions.value.length + 1}`,
-      agent_ids: selectedAgentIds.value,
-      orchestrator_agent_id: selectedHostId.value,
-    });
-    message.success("会话已创建");
-    showCreate.value = false;
-    newTitle.value = "";
-    selectedAgentIds.value = [];
-    selectedHostId.value = null;
-    router.push(`/projects/${projectId}/sessions/${s.id}`);
-  } catch (e: any) {
-    message.error(e.message || "创建失败");
-  }
+function sessionPath(s: any) {
+  return s.project_id
+    ? `/projects/${s.project_id}/sessions/${s.id}`
+    : `/sessions/${s.id}`;
 }
 
 async function toggleArchive(s: any) {
@@ -133,19 +121,76 @@ function removeSession(s: any) {
   });
 }
 
+function toggleProjectArchive() {
+  dialog.info({
+    title: project.value?.status === "archived" ? "恢复项目" : "归档项目",
+    content:
+      project.value?.status === "archived"
+        ? `确定恢复项目「${project.value?.name}」吗？`
+        : `归档项目「${project.value?.name}」？归档后仍可在归档中找回。`,
+    positiveText: "确定",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      try {
+        const archived = project.value?.status !== "archived";
+        await api.archiveProject(projectId, archived);
+        message.success(archived ? "已归档" : "已恢复");
+        if (archived) {
+          // 归档后回主页：同时触发侧边栏刷新，让项目从「项目」分组消失
+          router.push("/");
+        } else {
+          load();
+        }
+      } catch (e: any) {
+        message.error(e.message || "操作失败");
+      }
+    },
+  });
+}
+
+function removeProject() {
+  dialog.warning({
+    title: "删除项目",
+    content: `确定删除项目「${project.value?.name}」吗？其下所有会话、消息、任务将一并删除，且不可恢复。`,
+    positiveText: "删除",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      try {
+        await api.deleteProject(projectId);
+        message.success("已删除");
+        router.push("/");
+      } catch (e: any) {
+        message.error(e.message || "删除失败");
+      }
+    },
+  });
+}
+
 onMounted(load);
 </script>
 
 <template>
-  <div class="page">
-    <n-space align="center" style="margin-bottom: 16px">
-      <n-button size="small" quaternary @click="router.push('/projects')">← 返回</n-button>
-      <div class="page-title" style="margin: 0">{{ project?.name || "项目" }}</div>
-      <n-tag v-if="project?.status === 'archived'" size="small">已归档</n-tag>
+  <div class="pd-page">
+    <div class="pd-head">
+      <div class="pd-title">
+        {{ project?.name || "项目" }}
+        <n-button size="tiny" quaternary class="pd-rename-btn" title="重命名" @click="newName = project?.name || ''; showRename = true">✎</n-button>
+      </div>
+      <n-tag v-if="project?.status === 'archived'" size="small" type="warning">已归档</n-tag>
       <div style="flex: 1"></div>
       <n-button size="small" @click="loadMemory(); showMemory = true">🧠 项目记忆</n-button>
+      <n-dropdown
+        trigger="click"
+        :options="[
+          { label: project?.status === 'archived' ? '恢复项目' : '归档项目', key: 'archive' },
+          { label: '删除项目', key: 'delete', type: 'error' },
+        ]"
+        @select="(k: string) => (k === 'archive' ? toggleProjectArchive() : removeProject())"
+      >
+        <n-button size="small" quaternary>···</n-button>
+      </n-dropdown>
       <n-button size="small" type="primary" @click="showCreate = true">新建会话</n-button>
-    </n-space>
+    </div>
 
     <n-tabs v-model:value="filter" type="line" style="margin-bottom: 12px">
       <n-tab-pane name="active" :tab="`进行中 (${activeCount})`" />
@@ -177,7 +222,7 @@ onMounted(load);
           :key="s.id"
           hoverable
           class="session-card"
-          @click="router.push(`/projects/${projectId}/sessions/${s.id}`)"
+          @click="router.push(sessionPath(s))"
         >
           <template #header>
             <div class="session-header">
@@ -206,31 +251,16 @@ onMounted(load);
       </div>
     </n-spin>
 
-    <n-modal v-model:show="showCreate" preset="card" title="新建会话（群聊）" style="width: 560px">
-      <n-form label-placement="top">
-        <n-form-item label="会话标题">
-          <n-input v-model:value="newTitle" placeholder="可选，留空自动命名" />
-        </n-form-item>
-        <n-form-item label="选择参与的 Agent（可多选）">
-          <n-checkbox-group v-model:value="selectedAgentIds">
-            <n-space vertical>
-              <n-checkbox v-for="a in agents" :key="a.id" :value="a.id" :label="`${a.name}（${a.provider} / ${a.model}）`" />
-            </n-space>
-          </n-checkbox-group>
-        </n-form-item>
-        <n-form-item label="主理人（负责任务分工与验收）">
-          <n-select
-            v-model:value="selectedHostId"
-            :options="hostOptions"
-            placeholder="默认选第一个加入的 Agent"
-            clearable
-          />
-        </n-form-item>
-      </n-form>
+    <!-- 新建会话（全局弹窗，预选当前项目） -->
+    <NewSessionModal v-model:show="showCreate" :default-project-id="projectId" @created="load" />
+
+    <!-- 重命名项目 -->
+    <n-modal v-model:show="showRename" preset="card" title="重命名项目" style="width: 440px">
+      <n-input v-model:value="newName" placeholder="项目名称" maxlength="120" @keydown.enter.prevent="rename" />
       <template #footer>
         <n-space justify="end">
-          <n-button @click="showCreate = false">取消</n-button>
-          <n-button type="primary" @click="createSession">创建</n-button>
+          <n-button @click="showRename = false">取消</n-button>
+          <n-button type="primary" @click="rename">保存</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -257,6 +287,32 @@ onMounted(load);
 </template>
 
 <style scoped>
+.pd-page {
+  height: 100%;
+  padding: 24px;
+  overflow-y: auto;
+  background: #fff;
+}
+.pd-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.pd-title {
+  font-size: 20px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pd-rename-btn {
+  font-size: 14px;
+  opacity: 0.5;
+}
+.pd-rename-btn:hover {
+  opacity: 1;
+}
 .session-list {
   display: flex;
   flex-direction: column;

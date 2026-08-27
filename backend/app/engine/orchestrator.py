@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -22,6 +23,7 @@ from .event_bus import EventBus, event_bus
 from .memory import build_context
 from .protocol import (
     EVT_STATUS,
+    MEMBER_ACTIVE,
     MSG_ORCHESTRATOR,
     SENDER_AGENT,
     TASK_DONE,
@@ -31,11 +33,28 @@ from .protocol import (
     TASK_RUNNING,
 )
 
+# 能力标签 → 关键词映射（用于从 role_hint / system_prompt 推断成员擅长领域）
+_TAG_KEYWORDS: dict[str, list[str]] = {
+    "后端": ["后端", "服务端", "接口", "数据库", "高并发", "分布式", "api", "中间件", "微服务"],
+    "前端": ["前端", "页面", "ui", "组件", "交互", "html", "css", "javascript", "react", "vue"],
+    "测试": ["测试", "用例", "质量", "验收", "自动化", "缺陷", "pytest", "qa"],
+    "评审": ["评审", "审查", "代码审查", "安全", "review", "把关"],
+    "产品": ["产品", "需求", "prd", "产品经理", "用户研究"],
+    "项目管理": ["项目经理", "拆解", "排期", "wbs", "风险", "主理人"],
+    "运维": ["运维", "部署", "ci", "devops", "发布", "k8s", "docker"],
+    "数据分析": ["数据", "分析", "报表", "sql", "etl"],
+}
+
+# ② 分工规划系统提示词：先看成员能力清单，再分工，最后只输出子任务 JSON
 _PLAN_SYSTEM = (
     "你是本多 Agent 协作会话的主理人（主持人），负责任务拆解与分工。"
-    "请把用户任务拆解为 1~5 个清晰、可并行或串行执行的子任务，"
-    "每个子任务指派给最合适的成员 Agent（用其名称 assignee 指定）。"
-    '只输出 JSON 数组，不要输出任何其他内容，格式：'
+    "在开始前，你会收到一份【团队成员能力清单】和【成员能力自述】，"
+    "请认真阅读每个人擅长的领域，据此把用户任务拆解为 1~5 个清晰、可并行或串行执行的子任务，"
+    "**每个子任务必须指派给清单中实际存在、且能力最匹配该子任务的成员**（用其名称 assignee 指定）。"
+    "不要把所有任务都派给主理人自己——优先让最擅长的成员去执行。"
+    "你的回复分为两段：\n"
+    "第一段【分工说明】：用 2~4 句话简述你把任务切成哪几块、分别派给谁、依据是什么；\n"
+    "第二段【子任务】：只输出 JSON 数组，不要其他内容，格式："
     '[{"title": "子任务标题", "description": "详细要求", "assignee": "成员Agent名"}]'
 )
 
@@ -98,72 +117,209 @@ class OrchestratorService:
             session_id, {"type": EVT_STATUS, "content": text, "ts": _now_iso()}
         )
 
-    # ---------- 1. 拆解 ----------
+    # ---------- 1. 拆解（基于成员能力规划） ----------
     async def plan(
         self,
         session: ChatSession,
         host: Agent,
         user_task: str,
-    ) -> list[dict[str, str]]:
-        await self._status(session.id, f"主理人「{host.name}」正在拆解任务…")
+    ) -> list[dict[str, Any]]:
+        await self._status(
+            session.id, f"主理人「{host.name}」正在收集成员能力并拆解任务…"
+        )
+
+        # ① 成员能力清单（role_hint + 能力标签）
+        roster = self._team_roster(session)
+        roster_block = "\n".join(
+            f"- {r['name']}（{r['role'] or '通用'}）擅长：{('、'.join(r['tags'])) or '通用'}"
+            for r in roster
+        ) or "（群内暂无可用成员）"
+
+        # ④ 成员能力自述（动态，并发收集）
+        intro_block = await self._collect_self_intros(session)
+
         ctx = build_context(self.db, session.id)
-        messages = [
-            ChatMessage(role="user", content=f"用户任务：\n{user_task}"),
-            ChatMessage(role="user", content="请输出子任务拆解 JSON。"),
-        ]
+        plan_input = (
+            f"用户任务：\n{user_task}\n\n"
+            f"【团队成员能力清单】\n{roster_block}\n\n"
+            f"【成员能力自述】\n{intro_block or '（无）'}\n\n"
+            "请先给出【分工说明】，再输出【子任务】JSON 数组。"
+        )
+        messages = [ChatMessage(role="user", content=plan_input)]
         if ctx:
             ctx_msgs = [
                 ChatMessage(role=m["role"], content=m["content"]) for m in ctx[-10:]
             ]
             messages = ctx_msgs + messages
 
+        # 首次规划
         raw = await self._call_agent(host, messages, system=_PLAN_SYSTEM)
+        plans = self._extract_plans(raw)
+        if not plans:
+            await self._status(session.id, "拆解解析失败，降级为单任务执行。")
+            return self._fallback_plan(host, user_task)
+
+        # ③ 人岗匹配校验；不通过则带着提示重试一次
+        resolved, bad_names = self._resolve_plans(session, plans)
+        if bad_names:
+            await self._status(
+                session.id,
+                f"指派校验未通过：{('、'.join(bad_names))} 不在成员名单，重新规划…",
+            )
+            retry_input = (
+                plan_input
+                + f"\n\n注意：上次指派了不在名单中的成员：{('、'.join(bad_names))}。"
+                "assignee 必须是【团队成员能力清单】中存在的成员名称，请修正后重新输出。"
+            )
+            raw2 = await self._call_agent(
+                host,
+                messages[:-1] + [ChatMessage(role="user", content=retry_input)],
+                system=_PLAN_SYSTEM,
+            )
+            resolved, bad_names = self._resolve_plans(
+                session, self._extract_plans(raw2)
+            )
+
+        # 仍无法匹配 → 回退主理人并提示
+        if not resolved or bad_names:
+            await self._status(
+                session.id, "仍无法将子任务匹配到群内成员，降级由主理人统一执行。"
+            )
+            return self._fallback_plan(host, user_task)
+        return resolved
+
+    @staticmethod
+    def _extract_plans(raw: str) -> list[dict[str, Any]]:
         try:
             plans = _extract_json(raw)
         except Exception:  # noqa: BLE001
-            # 拆解失败：退化为单个子任务，由主理人自己执行
-            await self._status(session.id, "拆解解析失败，降级为单任务执行。")
-            return [
-                {
-                    "title": "整体任务",
-                    "description": user_task,
-                    "assignee": host.name,
-                }
-            ]
-
+            return []
         if not isinstance(plans, list) or not plans:
-            return [
-                {
-                    "title": "整体任务",
-                    "description": user_task,
-                    "assignee": host.name,
-                }
-            ]
+            return []
+        return plans
 
-        # 解析 assignee 为 Agent id；找不到则派给主理人自己
+    @staticmethod
+    def _fallback_plan(host: Agent, user_task: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "title": "整体任务",
+                "description": user_task,
+                "assignee": host,
+            }
+        ]
+
+    # ---------- 成员能力 ----------
+    def _team_roster(self, session: ChatSession) -> list[dict[str, Any]]:
+        """① 生成成员能力清单（名称/角色/能力标签）。"""
+        roster: list[dict[str, Any]] = []
+        for m in session.members:
+            if m.status != MEMBER_ACTIVE:
+                continue
+            agent = self.db.get(Agent, m.agent_id)
+            if not agent:
+                continue
+            roster.append(
+                {
+                    "name": agent.name,
+                    "role": agent.role_hint or "",
+                    "tags": self._infer_tags(agent),
+                }
+            )
+        return roster
+
+    @staticmethod
+    def _infer_tags(agent: Agent) -> list[str]:
+        """从名称 + 角色定位（role_hint）推断成员擅长领域标签；
+        role_hint 为空时退而用 system_prompt 前段推断。"""
+        text = f"{agent.name or ''} {agent.role_hint or ''}".lower()
+        tags = [
+            tag
+            for tag, keys in _TAG_KEYWORDS.items()
+            if any(k in text for k in keys)
+        ]
+        if tags:
+            return tags
+        text2 = (agent.system_prompt or "")[:300].lower()
+        return [
+            tag
+            for tag, keys in _TAG_KEYWORDS.items()
+            if any(k in text2 for k in keys)
+        ]
+
+    async def _collect_self_intros(self, session: ChatSession) -> str:
+        """④ 并发收集每个成员基于自身人设的能力自述。"""
+        members = [
+            self.db.get(Agent, m.agent_id)
+            for m in session.members
+            if m.status == MEMBER_ACTIVE
+        ]
+        members = [a for a in members if a]
+        if not members:
+            return ""
+
+        async def _intro(agent: Agent) -> str:
+            try:
+                provider = build_provider(agent)
+                result = await provider.chat(
+                    [
+                        ChatMessage(
+                            role="user",
+                            content="请用 2~3 句话介绍你擅长做什么、最适合承接哪一类任务（基于你的角色设定）。",
+                        )
+                    ],
+                    system=agent.system_prompt,
+                    temperature=0.3,
+                    max_tokens=300,
+                )
+                return f"- {agent.name}：{result.content.strip()[:200]}"
+            except Exception:  # noqa: BLE001
+                return f"- {agent.name}：{agent.role_hint or '通用'}"
+
+        try:
+            lines = await asyncio.gather(*[_intro(a) for a in members])
+            return "\n".join(lines)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _resolve_plans(
+        self, session: ChatSession, plans: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """③ 把 assignee 名称解析为成员 Agent；无法匹配的收集起来（不静默 fallback）。"""
         resolved: list[dict[str, Any]] = []
+        bad: list[str] = []
         for p in plans:
-            assignee_name = str(p.get("assignee", "")).strip()
-            assignee = self._find_agent(session, assignee_name)
+            name = str(p.get("assignee", "")).strip()
+            agent = self._find_agent(session, name)
+            if agent is None:
+                bad.append(name or "?")
+                continue
             resolved.append(
                 {
                     "title": str(p.get("title", "子任务")),
                     "description": str(p.get("description", "")),
-                    "assignee": assignee,
+                    "assignee": agent,
                 }
             )
-        return resolved
+        return resolved, bad
 
-    def _find_agent(self, session: ChatSession, name: str) -> Agent:
-        """按名称在会话成员里找 Agent，找不到返回主理人。"""
-        host = self.db.get(Agent, session.orchestrator_agent_id) if session.orchestrator_agent_id else None
-        for m in session.members:
-            if m.status != "active":
-                continue
-            agent = self.db.get(Agent, m.agent_id)
-            if agent and (agent.name == name or (host and agent.name == host.name)):
-                return agent
-        return host or session.members[0].agent_id and self.db.get(Agent, session.members[0].agent_id)
+    def _find_agent(self, session: ChatSession, name: str) -> Agent | None:
+        """按名称在活跃成员里找 Agent（先精确，再唯一包含）；找不到返回 None（不静默回退）。"""
+        name = (name or "").strip()
+        if not name:
+            return None
+        agents = [
+            self.db.get(Agent, m.agent_id)
+            for m in session.members
+            if m.status == MEMBER_ACTIVE
+        ]
+        agents = [a for a in agents if a]
+        exact = [a for a in agents if a.name == name]
+        if exact:
+            return exact[0]
+        sub = [a for a in agents if name in a.name]
+        if len(sub) == 1:
+            return sub[0]
+        return None
 
     # ---------- 2. 验收 ----------
     async def review(
@@ -173,11 +329,14 @@ class OrchestratorService:
         task: Any,
         result_content: str,
         run_output: str | None = None,
+        peer_comment: str | None = None,
     ) -> tuple[bool, str]:
         prompt = (
             f"子任务：{task.title}\n要求：{task.description}\n\n"
             f"成员产出：\n{result_content[:6000]}"
         )
+        if peer_comment:
+            prompt += f"\n\n评审者意见（供参考，不必然全盘采纳）：\n{peer_comment[:2000]}"
         if run_output:
             prompt += f"\n\n沙箱运行结果：\n{run_output[:3000]}"
         prompt += "\n\n请给出验收结论 JSON。"

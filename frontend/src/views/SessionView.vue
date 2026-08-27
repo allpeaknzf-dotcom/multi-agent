@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useMessage } from "naive-ui";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import { api } from "../api/client";
 import { useAgentsStore } from "../stores/agents";
 import { useSessionStore } from "../stores/session";
@@ -17,6 +19,21 @@ const session = ref<any>(null);
 const allAgents = ref<any[]>([]);
 const busy = ref(false);
 
+// 会话重命名
+const showRename = ref(false);
+const newTitle = ref("");
+async function renameSession() {
+  if (!newTitle.value.trim()) return;
+  try {
+    await api.renameSession(sessionId, newTitle.value.trim());
+    session.value.title = newTitle.value.trim();
+    message.success("已重命名");
+    showRename.value = false;
+  } catch (e: any) {
+    message.error(e.message || "重命名失败");
+  }
+}
+
 // 输入
 const input = ref("");
 const sendTarget = ref("all"); // all / agent:{id}
@@ -30,9 +47,30 @@ const recipientOptions = computed(() => [
     }),
 ]);
 
+// 任务暂停 / 继续
+async function pauseTask(t: any) {
+  try {
+    await api.pauseTask(t.id);
+    message.success("任务已暂停");
+    store.tasks = await api.listTasks(sessionId);
+  } catch (e: any) {
+    message.error(e.message || "暂停失败");
+  }
+}
+async function resumeTask(t: any) {
+  try {
+    message.info("继续执行中…");
+    await api.resumeTask(t.id);
+    store.tasks = await api.listTasks(sessionId);
+    message.success("任务已继续");
+  } catch (e: any) {
+    message.error(e.message || "继续失败");
+  }
+}
+
 // 拉人
 const showInvite = ref(false);
-const inviteAgentId = ref<number | null>(null);
+const inviteAgentIds = ref<number[]>([]);
 const notInSessionAgents = computed(() =>
   allAgents.value.filter(
     (a: any) => !store.members.some((m: any) => m.agent_id === a.id && m.status === "active")
@@ -43,14 +81,77 @@ const notInSessionAgents = computed(() =>
 const showTaskInput = ref(false);
 const taskInput = ref("");
 
-// 产物
-const artifacts = ref<any[]>([]);
+// 产物（按项目文件夹展示）
+const folders = ref<any[]>([]);
+const ungrouped = ref(0);
+const currentFolder = ref<string | null>(null);
+const folderArtifacts = ref<any[]>([]);
+const folderLoading = ref(false);
 const showArtifact = ref(false);
 const viewingArtifact = ref<any>(null);
 const artifactContent = ref("");
 
 async function loadArtifacts() {
-  artifacts.value = await api.listArtifacts(sessionId);
+  const res = await api.listArtifactFolders(sessionId);
+  folders.value = res.folders || [];
+  ungrouped.value = res.ungrouped || 0;
+}
+
+async function toggleFolder(folder: string) {
+  if (currentFolder.value === folder) {
+    currentFolder.value = null;
+    folderArtifacts.value = [];
+    return;
+  }
+  currentFolder.value = folder;
+  folderLoading.value = true;
+  try {
+    folderArtifacts.value = await api.listArtifacts(sessionId, folder);
+  } catch (e: any) {
+    message.error(e.message || "加载产物失败");
+    folderArtifacts.value = [];
+  } finally {
+    folderLoading.value = false;
+  }
+}
+
+const extracting = ref(false);
+async function extractArtifacts() {
+  extracting.value = true;
+  try {
+    const res = await api.extractArtifacts(sessionId);
+    message.success(`已提取 ${res.created?.length ?? 0} 个代码产物`);
+    await loadArtifacts();
+  } catch (e: any) {
+    message.error(e.message || "提取失败");
+  } finally {
+    extracting.value = false;
+  }
+}
+
+async function removeArtifact(art: any) {
+  try {
+    await api.deleteArtifact(art.id);
+    message.success("已删除");
+    folderArtifacts.value = folderArtifacts.value.filter((a) => a.id !== art.id);
+    await loadArtifacts();
+  } catch (e: any) {
+    message.error(e.message || "删除失败");
+  }
+}
+
+async function removeArtifactFolder(folder: string) {
+  try {
+    const res = await api.deleteArtifactFolder(sessionId, folder);
+    message.success(`已删除文件夹（${res.deleted ?? 0} 个文件）`);
+    if (currentFolder.value === folder) {
+      currentFolder.value = null;
+      folderArtifacts.value = [];
+    }
+    await loadArtifacts();
+  } catch (e: any) {
+    message.error(e.message || "删除失败");
+  }
 }
 
 async function downloadArtifact(art: any) {
@@ -113,21 +214,9 @@ function extractCodeBlocks(content: string): { lang: string; code: string }[] {
 }
 
 function renderContent(content: string): string {
-  let html = content
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  // 代码块 -> pre
-  html = html.replace(
-    /```(\w*)\n?([\s\S]*?)```/g,
-    (_m, lang: string, code: string) =>
-      `<pre class="codeblock"><span class="codelang">${lang || "code"}</span>${code.replace(/\n$/, "")}</pre>`
-  );
-  // 行内代码
-  html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  // 普通文本换行
-  html = html.replace(/\n/g, "<br>");
-  return html;
+  // 交给 marked 渲染完整 markdown，XSS 防护由 DOMPurify 兜底
+  const raw = marked.parse(content, { gfm: true, breaks: true }) as string;
+  return DOMPurify.sanitize(raw);
 }
 
 function avatarColor(id: number): string {
@@ -138,6 +227,43 @@ function avatarColor(id: number): string {
 // 成员信息
 function agentOf(m: any) {
   return allAgents.value.find((a: any) => a.id === m.agent_id);
+}
+
+// 成员悬浮提示（自研 fixed 浮层，不依赖 Naive 浮层组件，避免 WebView 渲染冻结）
+const tipVisible = ref(false);
+const tipContent = ref<{ name: string; role: string; prompt: string; isHost: boolean } | null>(null);
+const tipLeft = ref(0);
+const tipTop = ref(0);
+let tipTimer: ReturnType<typeof setTimeout> | null = null;
+function showMemberTip(m: any, e: MouseEvent) {
+  const a = agentOf(m);
+  tipContent.value = {
+    name: a?.name || `Agent#${m.agent_id}`,
+    role: a?.role_hint || "",
+    prompt: a?.system_prompt || "",
+    isHost: m.role === "host",
+  };
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const w = 300;
+  tipLeft.value = Math.max(8, Math.min(rect.right + 10, window.innerWidth - w - 12));
+  tipTop.value = Math.max(8, rect.top);
+  tipVisible.value = true;
+  if (tipTimer) {
+    clearTimeout(tipTimer);
+    tipTimer = null;
+  }
+}
+function hideMemberTip() {
+  if (tipTimer) clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => {
+    tipVisible.value = false;
+  }, 200);
+}
+function cancelTipHide() {
+  if (tipTimer) {
+    clearTimeout(tipTimer);
+    tipTimer = null;
+  }
 }
 
 // 发送
@@ -175,12 +301,15 @@ async function startTask() {
 
 // 拉人
 async function doInvite() {
-  if (!inviteAgentId.value) return;
+  const ids = inviteAgentIds.value;
+  if (!ids.length) return;
   try {
-    await api.inviteAgent(sessionId, inviteAgentId.value);
-    message.success("已拉入会话");
+    for (const id of ids) {
+      await api.inviteAgent(sessionId, id);
+    }
+    message.success(`已拉入 ${ids.length} 个 Agent`);
     showInvite.value = false;
-    inviteAgentId.value = null;
+    inviteAgentIds.value = [];
     await reloadMembers();
   } catch (e: any) {
     message.error(e.message || "拉人失败");
@@ -263,6 +392,7 @@ function taskStatusLabel(s: string) {
     running: "执行中",
     reviewing: "验收中",
     revising: "退回重做",
+    paused: "已暂停",
     done: "已完成",
     cancelled: "已取消",
   };
@@ -275,7 +405,13 @@ function taskStatusLabel(s: string) {
     <!-- 左：成员 -->
     <aside class="member-panel">
       <div class="panel-title">成员 ({{ store.members.filter((m: any) => m.status === "active").length }})</div>
-      <div v-for="m in store.members.filter((mm: any) => mm.status === 'active')" :key="m.id" class="member-item">
+      <div
+        v-for="m in store.members.filter((mm: any) => mm.status === 'active')"
+        :key="m.id"
+        class="member-item"
+        @mouseenter="showMemberTip(m, $event)"
+        @mouseleave="hideMemberTip"
+      >
         <n-avatar :style="{ background: avatarColor(m.agent_id) }" round size="small">
           {{ (agentOf(m)?.name || "A")[0] }}
         </n-avatar>
@@ -318,10 +454,24 @@ function taskStatusLabel(s: string) {
     <!-- 中：聊天 -->
     <main class="chat-area">
       <div class="chat-head">
-        <n-button size="small" quaternary @click="router.push(`/projects/${session?.project_id}`)">←</n-button>
-        <div class="chat-title">{{ session?.title || "会话" }}</div>
+        <n-button size="small" quaternary @click="router.push(session?.project_id ? `/projects/${session.project_id}` : '/')">←</n-button>
+        <div class="chat-title">
+          <span>{{ session?.title || "会话" }}</span>
+          <n-button size="tiny" quaternary class="chat-rename-btn" title="重命名" @click="newTitle = session?.title || ''; showRename = true">✎</n-button>
+        </div>
         <n-tag v-if="session?.orchestrator_agent_id" size="small" type="warning">主理人已就位</n-tag>
       </div>
+
+      <!-- 重命名会话 -->
+      <n-modal v-model:show="showRename" preset="card" title="重命名会话" style="width: 440px">
+        <n-input v-model:value="newTitle" placeholder="会话标题" maxlength="120" @keydown.enter.prevent="renameSession" />
+        <template #footer>
+          <n-space justify="end">
+            <n-button @click="showRename = false">取消</n-button>
+            <n-button type="primary" @click="renameSession">保存</n-button>
+          </n-space>
+        </template>
+      </n-modal>
 
       <!-- 状态栏 -->
       <div v-if="store.statuses.length" class="status-strip">
@@ -374,11 +524,6 @@ function taskStatusLabel(s: string) {
 
       <!-- 输入 -->
       <div class="input-area">
-        <n-space style="margin-bottom: 6px" align="center">
-          <n-select v-model:value="sendTarget" size="small" :options="recipientOptions" style="width: 150px" />
-          <n-button v-if="sendTarget !== 'all'" size="small" type="primary" ghost disabled>将只发给指定 Agent</n-button>
-          <span v-else style="font-size: 12px; color: #999">或在输入框输入 <code style="background:#f3f4f6;padding:0 4px;border-radius:4px">@Agent名</code> 直接定向</span>
-        </n-space>
         <div class="input-row">
           <n-input
             v-model:value="input"
@@ -388,51 +533,120 @@ function taskStatusLabel(s: string) {
             class="msg-input"
             @keydown.enter.exact.prevent="send"
           />
+          <n-popselect
+            v-model:value="sendTarget"
+            :options="recipientOptions"
+            trigger="click"
+            placement="top-end"
+            size="small"
+            virtual-scroll
+          >
+            <n-button size="small" :type="sendTarget !== 'all' ? 'primary' : 'default'" ghost class="at-btn">
+              @
+            </n-button>
+          </n-popselect>
           <n-button type="primary" :loading="busy" @click="send" class="send-btn">发送</n-button>
         </div>
       </div>
     </main>
 
-    <!-- 右：任务 + 产物 -->
+    <!-- 右：任务 + 产物（上下各一半，各自滚动） -->
     <aside class="task-panel">
-      <div class="panel-title">任务</div>
-      <n-empty v-if="store.tasks.length === 0" description="暂无任务" size="small" />
-      <div v-for="t in store.tasks" :key="t.id" class="task-item" :class="t.status">
-        <div class="task-title">{{ t.title }}</div>
-        <div class="task-meta">
-          <n-tag size="tiny" :type="t.status === 'done' ? 'success' : t.status === 'running' ? 'info' : t.status === 'revising' ? 'error' : 'default'">
-            {{ taskStatusLabel(t.status) }}
-          </n-tag>
-          <span v-if="t.round"> 第 {{ t.round }}/{{ t.max_rounds }} 轮</span>
+      <div class="panel-half">
+        <div class="panel-title">任务</div>
+        <div class="panel-scroll">
+          <n-empty v-if="store.tasks.length === 0" description="暂无任务" size="small" />
+          <div v-for="t in store.tasks" :key="t.id" class="task-item" :class="t.status">
+            <div class="task-title">{{ t.title }}</div>
+            <div class="task-meta">
+              <n-tag size="tiny" :type="t.status === 'done' ? 'success' : t.status === 'running' ? 'info' : t.status === 'revising' || t.status === 'paused' ? 'warning' : 'default'">
+                {{ taskStatusLabel(t.status) }}
+              </n-tag>
+              <span v-if="t.round"> 第 {{ t.round }}/{{ t.max_rounds }} 轮</span>
+              <n-button v-if="t.status === 'running'" size="tiny" quaternary @click="pauseTask(t)">暂停</n-button>
+              <n-button v-else-if="t.status === 'paused'" size="tiny" type="primary" ghost @click="resumeTask(t)">继续</n-button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="artifact-zone">
-        <div class="panel-title">产物</div>
-        <n-empty v-if="artifacts.length === 0" description="暂无产物（运行代码后生成）" size="small" />
-        <div v-for="art in artifacts" :key="art.id" class="artifact-item">
-          <div class="artifact-name" :title="art.name">{{ art.name }}</div>
-          <div class="task-meta">
-            <n-tag size="tiny" :type="art.type === 'image' ? 'success' : art.type === 'code' ? 'info' : art.type === 'doc' ? 'warning' : 'default'">
-              {{ artifactTypeLabel(art.type) }}
-            </n-tag>
-            <span>{{ new Date(art.created_at).toLocaleTimeString() }}</span>
-          </div>
-          <div class="artifact-actions">
-            <n-button size="tiny" @click="viewArtifact(art)">查看</n-button>
-            <n-button size="tiny" type="primary" @click="downloadArtifact(art)">下载</n-button>
+      <div class="panel-half">
+        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
+          <span>产物</span>
+          <n-button size="tiny" :loading="extracting" @click="extractArtifacts">提取代码</n-button>
+        </div>
+        <div class="panel-scroll">
+          <n-empty v-if="folders.length === 0" description="暂无产物（运行代码后生成）" size="small" />
+          <div v-for="f in folders" :key="f.folder" class="folder-item">
+            <div class="folder-row" @click="toggleFolder(f.folder)">
+              <n-tooltip trigger="hover" placement="top">
+                <template #trigger>
+                  <span class="folder-name">📁 {{ f.folder }}</span>
+                </template>
+                {{ f.count }} 个文件
+              </n-tooltip>
+              <n-popconfirm
+                @positive-click="removeArtifactFolder(f.folder)"
+                positive-text="删除"
+                negative-text="取消"
+              >
+                <template #trigger>
+                  <span class="folder-del-btn" @click.stop>✕</span>
+                </template>
+                确认删除整个文件夹「{{ f.folder }}」及其 {{ f.count }} 个文件？此操作不可恢复。
+              </n-popconfirm>
+            </div>
+            <div v-if="currentFolder === f.folder" class="folder-files" :class="{ loading: folderLoading }">
+              <n-empty v-if="folderArtifacts.length === 0" description="空文件夹" size="small" />
+              <div v-for="art in folderArtifacts" :key="art.id" class="artifact-item">
+                <div class="artifact-name" :title="art.name">{{ art.name }}</div>
+                <div class="task-meta">
+                  <n-tag size="tiny" :type="art.type === 'image' ? 'success' : art.type === 'code' ? 'info' : art.type === 'doc' ? 'warning' : 'default'">
+                    {{ artifactTypeLabel(art.type) }}
+                  </n-tag>
+                  <span>{{ new Date(art.created_at).toLocaleTimeString() }}</span>
+                </div>
+                <div class="artifact-actions">
+                  <n-button size="tiny" @click="viewArtifact(art)">查看</n-button>
+                  <n-button size="tiny" type="primary" @click="downloadArtifact(art)">下载</n-button>
+                  <n-popconfirm
+                    @positive-click="removeArtifact(art)"
+                    positive-text="删除"
+                    negative-text="取消"
+                  >
+                    <template #trigger>
+                      <n-button size="tiny" type="error" quaternary>删除</n-button>
+                    </template>
+                    确认删除该产物文件「{{ art.name }}」？此操作不可恢复。
+                  </n-popconfirm>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </aside>
 
     <!-- 拉人弹窗 -->
-    <n-modal v-model:show="showInvite" preset="card" title="拉 Agent 进群" style="width: 420px">
-      <n-select v-model:value="inviteAgentId" :options="notInSessionAgents.map((a: any) => ({ label: `${a.name}（${a.model}）`, value: a.id }))" placeholder="选择要拉入的 Agent" />
+    <n-modal v-model:show="showInvite" preset="card" title="拉 Agent 进群" style="width: 460px">
+      <n-select
+        v-model:value="inviteAgentIds"
+        :options="notInSessionAgents.map((a: any) => ({ label: `${a.name}（${a.model}）`, value: a.id }))"
+        multiple
+        filterable
+        clearable
+        placeholder="选择要拉入的 Agent（可多选）"
+        :max-tag-count="3"
+      />
+      <div v-if="notInSessionAgents.length === 0" style="font-size: 12px; color: #999; margin-top: 8px">
+        所有 Agent 都已在会话中
+      </div>
       <template #footer>
         <n-space justify="end">
           <n-button @click="showInvite = false">取消</n-button>
-          <n-button type="primary" @click="doInvite">拉入</n-button>
+          <n-button type="primary" :disabled="inviteAgentIds.length === 0" @click="doInvite">
+            拉入{{ inviteAgentIds.length ? `（${inviteAgentIds.length}）` : "" }}
+          </n-button>
         </n-space>
       </template>
     </n-modal>
@@ -447,6 +661,25 @@ function taskStatusLabel(s: string) {
         </n-space>
       </template>
     </n-modal>
+
+    <!-- 成员悬浮提示（fixed 定位，不依赖浮层组件） -->
+    <div
+      v-if="tipVisible"
+      class="member-tip-fixed"
+      :style="{ left: tipLeft + 'px', top: tipTop + 'px' }"
+      @mouseenter="cancelTipHide"
+      @mouseleave="hideMemberTip"
+    >
+      <div class="member-tip-title">
+        {{ tipContent?.name }}
+        <span v-if="tipContent?.isHost" class="member-tip-host">主理人</span>
+      </div>
+      <div v-if="tipContent?.role" class="member-tip-line"><b>角色</b>：{{ tipContent.role }}</div>
+      <div v-if="tipContent?.prompt" class="member-tip-line"><b>人设 / 系统提示</b>：{{ tipContent.prompt }}</div>
+      <div v-if="!tipContent?.role && !tipContent?.prompt" class="member-tip-empty">
+        这个 Agent 还没设置人设 / 系统提示词，<br />可以去「Agent 管理」里编辑补充哦～
+      </div>
+    </div>
   </div>
 </template>
 
@@ -493,6 +726,47 @@ function taskStatusLabel(s: string) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 成员悬浮提示（fixed 定位，独立于容器 overflow，不依赖浮层组件） */
+.member-tip-fixed {
+  position: fixed;
+  z-index: 2000;
+  width: 300px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: #2b2f36;
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.92);
+  pointer-events: auto;
+}
+.member-tip-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: #fff;
+}
+.member-tip-host {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #f0a020;
+  font-weight: 600;
+}
+.member-tip-line {
+  margin-bottom: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.member-tip-line b {
+  color: #63e2b7;
+  font-weight: 600;
+}
+.member-tip-empty {
+  color: rgba(255, 255, 255, 0.65);
+  padding: 4px 0;
+}
 .task-zone {
   margin-top: 16px;
   border-top: 1px solid #eceef2;
@@ -518,6 +792,23 @@ function taskStatusLabel(s: string) {
   flex: 1;
   font-weight: 600;
   font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+.chat-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-rename-btn {
+  font-size: 13px;
+  opacity: 0.5;
+}
+.chat-rename-btn:hover {
+  opacity: 1;
 }
 .status-strip {
   padding: 4px 16px;
@@ -618,6 +909,15 @@ function taskStatusLabel(s: string) {
 .msg-input {
   flex: 1;
 }
+.target-btn,
+.at-btn {
+  flex-shrink: 0;
+  height: 34px;
+  width: 34px;
+  padding: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
 .send-btn {
   flex-shrink: 0;
   height: 34px;
@@ -627,9 +927,28 @@ function taskStatusLabel(s: string) {
 .task-panel {
   width: 240px;
   border-left: 1px solid #eceef2;
-  padding: 16px;
   background: #fff;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.panel-half {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 0;
+  overflow: hidden;
+}
+.panel-half + .panel-half {
+  border-top: 1px solid #eceef2;
+}
+.panel-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  padding-bottom: 12px;
 }
 .task-item {
   padding: 8px;
@@ -658,17 +977,71 @@ function taskStatusLabel(s: string) {
   color: #888;
 }
 
-/* 产物区 */
-.artifact-zone {
-  margin-top: 18px;
-  border-top: 1px solid #eceef2;
-  padding-top: 12px;
-}
+/* 产物项 */
 .artifact-item {
   border: 1px solid #eceef2;
   border-radius: 8px;
   padding: 8px;
   margin-bottom: 8px;
+}
+/* 产物文件夹 */
+.folder-item {
+  margin-bottom: 8px;
+}
+.folder-row {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #eceef2;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.folder-row:hover {
+  background: #f5f7fa;
+}
+.folder-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 删除图标：悬浮提示，不占布局 */
+.folder-del-btn {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  border: none;
+  background: transparent;
+  color: #d03050;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  transition: opacity 0.15s, background 0.15s;
+  z-index: 5;
+}
+.folder-row:hover .folder-del-btn {
+  opacity: 1;
+}
+.folder-del-btn:hover {
+  background: #fdecee;
+}
+.folder-files {
+  margin-top: 6px;
+  padding: 6px;
+  background: #fafbfc;
+  border-radius: 8px;
+}
+.folder-files.loading {
+  opacity: 0.6;
 }
 .artifact-name {
   font-size: 12px;

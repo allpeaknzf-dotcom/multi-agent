@@ -22,9 +22,62 @@ from ..schemas import entities as schemas
 router = APIRouter()
 
 
-@router.get("/api/agent-templates")
-def agent_templates() -> list[dict]:
-    return AGENT_TEMPLATES
+@router.get("/api/agent-templates", response_model=list[schemas.TemplateOut])
+def list_templates(db: DbSession = Depends(get_session)):
+    return (
+        db.query(models.AgentTemplate)
+        .order_by(models.AgentTemplate.is_builtin.desc(), models.AgentTemplate.id.asc())
+        .all()
+    )
+
+
+@router.post("/api/agent-templates", response_model=schemas.TemplateOut)
+def create_template(body: schemas.TemplateCreate, db: DbSession = Depends(get_session)):
+    # 模板不绑定 Provider/模型，建 Agent 时由所选 Key 自动带出
+    t = models.AgentTemplate(
+        name=body.name,
+        provider="openai",
+        model=None,
+        role_hint=body.role_hint,
+        system_prompt=body.system_prompt,
+        is_builtin=0,
+    )
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+@router.put("/api/agent-templates/{tid}", response_model=schemas.TemplateOut)
+def update_template(
+    tid: int,
+    body: schemas.TemplateUpdate,
+    db: DbSession = Depends(get_session),
+):
+    t = db.get(models.AgentTemplate, tid)
+    if not t:
+        raise HTTPException(404, "模板不存在")
+    if t.is_builtin:
+        raise HTTPException(403, "预置模板仅可查看，不可修改")
+    for f in ("name", "role_hint", "system_prompt"):
+        v = getattr(body, f)
+        if v is not None:
+            setattr(t, f, v)
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+@router.delete("/api/agent-templates/{tid}")
+def delete_template(tid: int, db: DbSession = Depends(get_session)):
+    t = db.get(models.AgentTemplate, tid)
+    if not t:
+        raise HTTPException(404, "模板不存在")
+    if t.is_builtin:
+        raise HTTPException(403, "预置模板仅可查看，不可删除")
+    db.delete(t)
+    db.commit()
+    return {"ok": True}
 
 
 # ============================================================
@@ -74,6 +127,21 @@ def archive_project(
     if not p:
         raise HTTPException(404, "项目不存在")
     p.status = "archived" if body.archived else "active"
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.put("/api/projects/{project_id}/rename", response_model=schemas.ProjectOut)
+def rename_project(
+    project_id: int,
+    body: schemas.RenameRequest,
+    db: DbSession = Depends(get_session),
+):
+    p = db.get(models.Project, project_id)
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    p.name = body.name.strip()
     db.commit()
     db.refresh(p)
     return p
@@ -277,7 +345,7 @@ def delete_agent(agent_id: int, db: DbSession = Depends(get_session)):
 async def create_session(
     body: schemas.SessionCreate, db: DbSession = Depends(get_session)
 ):
-    if not db.get(models.Project, body.project_id):
+    if body.project_id is not None and not db.get(models.Project, body.project_id):
         raise HTTPException(404, "项目不存在")
     s = models.ChatSession(
         project_id=body.project_id,
@@ -298,6 +366,30 @@ async def create_session(
         db.commit()
         db.refresh(s)
     return s
+
+
+@router.get("/api/recent-sessions", response_model=list[schemas.SessionOut])
+def list_recent_sessions(
+    limit: int = 30,
+    archived: bool = False,
+    db: DbSession = Depends(get_session),
+):
+    """archived=false 返回进行中的独立对话（侧边栏「最近」）；archived=true 返回所有已归档会话（含项目内，供「归档与恢复」统一找回）。"""
+    q = db.query(models.ChatSession)
+    if archived:
+        # 归档列表：包含项目内会话，方便在「归档与恢复」里统一找回
+        q = q.filter(models.ChatSession.status == "archived")
+    else:
+        # 最近：仅独立对话（无项目归属）
+        q = q.filter(
+            models.ChatSession.project_id.is_(None),
+            models.ChatSession.status != "archived",
+        )
+    return (
+        q.order_by(models.ChatSession.created_at.desc(), models.ChatSession.id.desc())
+        .limit(limit)
+        .all()
+    )
 
 
 @router.get("/api/projects/{project_id}/sessions", response_model=list[schemas.SessionOut])
@@ -343,6 +435,38 @@ def archive_session(
     return s
 
 
+@router.put("/api/sessions/{session_id}/rename", response_model=schemas.SessionOut)
+def rename_session(
+    session_id: int,
+    body: schemas.RenameRequest,
+    db: DbSession = Depends(get_session),
+):
+    s = db.get(models.ChatSession, session_id)
+    if not s:
+        raise HTTPException(404, "会话不存在")
+    s.title = body.name.strip() or s.title
+    db.commit()
+    db.refresh(s)
+    return s
+
+
+@router.put("/api/sessions/{session_id}/move", response_model=schemas.SessionOut)
+def move_session(
+    session_id: int,
+    body: schemas.MoveSessionRequest,
+    db: DbSession = Depends(get_session),
+):
+    s = db.get(models.ChatSession, session_id)
+    if not s:
+        raise HTTPException(404, "会话不存在")
+    if body.project_id is not None and not db.get(models.Project, body.project_id):
+        raise HTTPException(404, "项目不存在")
+    s.project_id = body.project_id
+    db.commit()
+    db.refresh(s)
+    return s
+
+
 @router.get("/api/sessions/{session_id}/members", response_model=list[schemas.MemberOut])
 def session_members(session_id: int, db: DbSession = Depends(get_session)):
     return (
@@ -377,15 +501,29 @@ def session_tasks(session_id: int, db: DbSession = Depends(get_session)):
 # Artifacts（产物）
 # ============================================================
 @router.get("/api/sessions/{session_id}/artifacts", response_model=list[schemas.ArtifactOut])
-def list_artifacts(session_id: int, db: DbSession = Depends(get_session)):
+def list_artifacts(
+    session_id: int,
+    folder: str | None = None,
+    db: DbSession = Depends(get_session),
+):
     if not db.get(models.ChatSession, session_id):
         raise HTTPException(404, "会话不存在")
-    return (
-        db.query(models.Artifact)
-        .filter_by(session_id=session_id)
-        .order_by(models.Artifact.id.desc())
-        .all()
-    )
+    q = db.query(models.Artifact).filter_by(session_id=session_id)
+    if folder is not None:
+        if folder == "":
+            q = q.filter(models.Artifact.folder.is_(None))
+        else:
+            q = q.filter_by(folder=folder)
+    return q.order_by(models.Artifact.id.desc()).all()
+
+
+@router.get("/api/sessions/{session_id}/artifact-folders")
+def list_artifact_folders(session_id: int, db: DbSession = Depends(get_session)):
+    """按项目文件夹分组统计产物（右侧面板按文件夹展示）。"""
+    if not db.get(models.ChatSession, session_id):
+        raise HTTPException(404, "会话不存在")
+    manager = ChatManager(db)
+    return manager.list_artifact_folders(session_id)
 
 
 @router.get("/api/artifacts/{artifact_id}/download")
@@ -404,6 +542,37 @@ def download_artifact(artifact_id: int, db: DbSession = Depends(get_session)):
         filename=art.name or path.name,
         media_type="application/octet-stream",
     )
+
+
+@router.post("/api/sessions/{session_id}/extract-artifacts")
+def extract_artifacts(session_id: int, db: DbSession = Depends(get_session)):
+    """[一键提取] 扫描会话历史所有消息，把其中的代码块保存为产物文件。"""
+    if not db.get(models.ChatSession, session_id):
+        raise HTTPException(404, "会话不存在")
+    manager = ChatManager(db)
+    created = manager.extract_artifacts(session_id)
+    return {"ok": True, "created": created}
+
+
+@router.delete("/api/artifacts/{artifact_id}")
+def delete_artifact(artifact_id: int, db: DbSession = Depends(get_session)):
+    """删除单个产物（数据库记录 + 磁盘文件）。"""
+    manager = ChatManager(db)
+    if not manager.delete_artifact(artifact_id):
+        raise HTTPException(404, "产物不存在")
+    return {"ok": True}
+
+
+@router.delete("/api/sessions/{session_id}/artifact-folders/{folder}")
+def delete_artifact_folder(
+    session_id: int, folder: str, db: DbSession = Depends(get_session)
+):
+    """删除整个项目文件夹（含其下所有产物）。"""
+    manager = ChatManager(db)
+    n = manager.delete_artifact_folder(session_id, folder)
+    if n == 0:
+        raise HTTPException(404, "文件夹不存在或无产物")
+    return {"ok": True, "deleted": n}
 
 
 @router.post("/api/sessions/{session_id}/invite")
@@ -453,6 +622,40 @@ async def orchestrate(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "task_id": task.id}
+
+
+@router.post("/api/tasks/{task_id}/pause")
+def pause_task(task_id: int, db: DbSession = Depends(get_session)):
+    task = db.get(models.Task, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    if task.status != "running":
+        raise HTTPException(400, "仅执行中的任务可暂停")
+    task.status = "paused"
+    # 同根任务下的执行中子任务一并暂停
+    if task.parent_task_id:
+        db.query(models.Task).filter(
+            models.Task.parent_task_id == task.parent_task_id,
+            models.Task.status == "running",
+        ).update({"status": "paused"})
+    db.commit()
+    db.refresh(task)
+    return {"ok": True, "status": task.status}
+
+
+@router.post("/api/tasks/{task_id}/resume")
+async def resume_task(task_id: int, db: DbSession = Depends(get_session)):
+    task = db.get(models.Task, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    if task.status != "paused":
+        raise HTTPException(400, "仅已暂停的任务可继续")
+    manager = ChatManager(db)
+    try:
+        task = await manager.orchestrate(task.session_id, task.title, root_id=task.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "task_id": task.id, "status": task.status}
 
 
 @router.post("/api/sessions/{session_id}/run-code", response_model=schemas.RunCodeOut)

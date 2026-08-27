@@ -30,6 +30,14 @@ class ProjectMemoryUpdate(BaseModel):
     memory: str
 
 
+class RenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class MoveSessionRequest(BaseModel):
+    project_id: int | None = None
+
+
 # ---------- KeyEntry ----------
 class KeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -88,9 +96,31 @@ class AgentOut(ORMBase):
     created_at: datetime
 
 
+# ---------- AgentTemplate ----------
+class TemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    role_hint: str | None = None
+    system_prompt: str = ""
+
+
+class TemplateOut(ORMBase):
+    id: int
+    name: str
+    role_hint: str | None
+    system_prompt: str
+    is_builtin: bool
+    created_at: datetime
+
+
+class TemplateUpdate(BaseModel):
+    name: str | None = None
+    role_hint: str | None = None
+    system_prompt: str | None = None
+
+
 # ---------- Session ----------
 class SessionCreate(BaseModel):
-    project_id: int
+    project_id: int | None = None
     title: str = "新会话"
     agent_ids: list[int] = Field(default_factory=list)
     orchestrator_agent_id: int | None = None
@@ -98,7 +128,7 @@ class SessionCreate(BaseModel):
 
 class SessionOut(ORMBase):
     id: int
-    project_id: int
+    project_id: int | None
     title: str
     orchestrator_agent_id: int | None
     status: str
@@ -151,6 +181,7 @@ class TaskOut(ORMBase):
     result_msg_id: int | None
     round: int
     max_rounds: int
+    folder: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -164,6 +195,7 @@ class ArtifactOut(ORMBase):
     name: str
     file_path: str
     language: str | None
+    folder: str | None
     meta: dict[str, Any]
     created_at: datetime
 
