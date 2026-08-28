@@ -14,6 +14,12 @@ DB_PATH = APP_DATA_DIR / "multiagent.db"
 ARTIFACT_DIR = APP_DATA_DIR / "artifacts"
 ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
+# 项目产物根目录：生成代码 / 产物以「项目」为单位自动落盘到该目录（用户可见）
+PROJECTS_DIR = Path(
+    os.environ.get("MULTIAGENT_PROJECTS_DIR", str(Path.home() / "Multi-agent"))
+)
+PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+
 # 本地编排服务监听地址（仅本机）
 SERVICE_HOST = os.environ.get("MULTIAGENT_HOST", "127.0.0.1")
 SERVICE_PORT = int(os.environ.get("MULTIAGENT_PORT", "8765"))

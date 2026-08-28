@@ -35,6 +35,25 @@ async function rename() {
   }
 }
 
+// 打开项目本地文件夹（产物自动落盘位置）
+async function openProjectFolder() {
+  try {
+    const res = await api.projectFolderPath(projectId);
+    if (!res?.path) {
+      message.error("未获取到项目路径");
+      return;
+    }
+    if ((window as any).__TAURI_INTERNALS__) {
+      const { openPath } = await import("@tauri-apps/plugin-opener");
+      await openPath(res.path);
+    } else {
+      message.info(`项目文件夹：${res.path}`);
+    }
+  } catch (e: any) {
+    message.error(e.message || "打开文件夹失败");
+  }
+}
+
 const visibleSessions = computed(() =>
   sessions.value.filter((s) => {
     if (filter.value === "active" ? s.status === "archived" : s.status !== "archived") return false;
@@ -178,6 +197,7 @@ onMounted(load);
       </div>
       <n-tag v-if="project?.status === 'archived'" size="small" type="warning">已归档</n-tag>
       <div style="flex: 1"></div>
+      <n-button size="small" @click="openProjectFolder">📁 打开文件夹</n-button>
       <n-button size="small" @click="loadMemory(); showMemory = true">🧠 项目记忆</n-button>
       <n-dropdown
         trigger="click"

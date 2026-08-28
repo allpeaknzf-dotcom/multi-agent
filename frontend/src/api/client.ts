@@ -138,18 +138,17 @@ export const api = {
     ),
   listArtifactFolders: (id: number) =>
     req<any>(`/api/sessions/${id}/artifact-folders`),
-  extractArtifacts: (id: number) =>
-    req<any>(`/api/sessions/${id}/extract-artifacts`, {
-      method: "POST",
-    }),
+  projectFolderPath: (projectId: number) =>
+    req<{ ok: boolean; path: string }>(`/api/projects/${projectId}/path`),
   deleteArtifact: (artifactId: number) =>
     req<any>(`/api/artifacts/${artifactId}`, {
       method: "DELETE",
     }),
   deleteArtifactFolder: (sessionId: number, folder: string) =>
-    req<any>(`/api/sessions/${sessionId}/artifact-folders/${encodeURIComponent(folder)}`, {
-      method: "DELETE",
-    }),
+    req<any>(
+      `/api/sessions/${sessionId}/artifact-folders?folder=${encodeURIComponent(folder)}`,
+      { method: "DELETE" }
+    ),
   artifactDownloadUrl: (artifactId: number) =>
     `${BASE}/api/artifacts/${artifactId}/download`,
   fetchArtifact: (artifactId: number) => fetch(`${BASE}/api/artifacts/${artifactId}/download`),

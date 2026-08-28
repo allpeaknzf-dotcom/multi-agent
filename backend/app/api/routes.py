@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session as DbSession
 
-from ..core.config import ARTIFACT_DIR
+from ..core.config import ARTIFACT_DIR, PROJECTS_DIR
 from ..core.db import get_session
 from ..core import keyring_store
 from ..engine.event_bus import event_bus
@@ -91,12 +91,22 @@ def create_project(
     db.add(p)
     db.commit()
     db.refresh(p)
+    # 同步创建项目本地文件夹 + README（生成产物自动落盘于此）
+    ChatManager(db).ensure_project_folder(p.id, p.name)
     return p
 
 
 @router.get("/api/projects", response_model=list[schemas.ProjectOut])
 def list_projects(db: DbSession = Depends(get_session)):
     return db.query(models.Project).order_by(models.Project.id.desc()).all()
+
+
+@router.get("/api/projects/{project_id}/path")
+def project_folder_path(project_id: int, db: DbSession = Depends(get_session)):
+    """返回项目在本地磁盘上的产物文件夹绝对路径（供「打开文件夹」使用）。"""
+    manager = ChatManager(db)
+    d = manager.ensure_project_folder(project_id)
+    return {"ok": True, "path": str(d)}
 
 
 @router.get("/api/projects/{project_id}", response_model=schemas.ProjectOut)
@@ -141,9 +151,12 @@ def rename_project(
     p = db.get(models.Project, project_id)
     if not p:
         raise HTTPException(404, "项目不存在")
+    old_name = p.name
     p.name = body.name.strip()
     db.commit()
     db.refresh(p)
+    # 同步重命名本地项目文件夹（目标已存在则跳过，不丢数据）
+    ChatManager(db).rename_project_folder(project_id, old_name, p.name)
     return p
 
 
@@ -532,8 +545,11 @@ def download_artifact(artifact_id: int, db: DbSession = Depends(get_session)):
     if not art:
         raise HTTPException(404, "产物不存在")
     path = Path(art.file_path).resolve()
-    # 只允许访问应用产物目录内的文件，防路径穿越
-    if not str(path).startswith(str(ARTIFACT_DIR.resolve())):
+    # 只允许访问项目产物目录 / 旧产物目录内的文件，防路径穿越
+    if not (
+        str(path).startswith(str(PROJECTS_DIR.resolve()))
+        or str(path).startswith(str(ARTIFACT_DIR.resolve()))
+    ):
         raise HTTPException(403, "非法路径")
     if not path.is_file():
         raise HTTPException(404, "产物文件已丢失")
@@ -542,16 +558,6 @@ def download_artifact(artifact_id: int, db: DbSession = Depends(get_session)):
         filename=art.name or path.name,
         media_type="application/octet-stream",
     )
-
-
-@router.post("/api/sessions/{session_id}/extract-artifacts")
-def extract_artifacts(session_id: int, db: DbSession = Depends(get_session)):
-    """[一键提取] 扫描会话历史所有消息，把其中的代码块保存为产物文件。"""
-    if not db.get(models.ChatSession, session_id):
-        raise HTTPException(404, "会话不存在")
-    manager = ChatManager(db)
-    created = manager.extract_artifacts(session_id)
-    return {"ok": True, "created": created}
 
 
 @router.delete("/api/artifacts/{artifact_id}")
@@ -563,11 +569,11 @@ def delete_artifact(artifact_id: int, db: DbSession = Depends(get_session)):
     return {"ok": True}
 
 
-@router.delete("/api/sessions/{session_id}/artifact-folders/{folder}")
+@router.delete("/api/sessions/{session_id}/artifact-folders")
 def delete_artifact_folder(
     session_id: int, folder: str, db: DbSession = Depends(get_session)
 ):
-    """删除整个项目文件夹（含其下所有产物）。"""
+    """删除整个项目文件夹（含其下所有产物）。folder 走 query 参数，以支持「日期/产物名」多级名称。"""
     manager = ChatManager(db)
     n = manager.delete_artifact_folder(session_id, folder)
     if n == 0:

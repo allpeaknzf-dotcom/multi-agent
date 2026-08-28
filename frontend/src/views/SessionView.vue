@@ -97,6 +97,31 @@ async function loadArtifacts() {
   ungrouped.value = res.ungrouped || 0;
 }
 
+// 打开项目本地文件夹（产物落盘位置）
+async function openProjectFolder() {
+  const projectId = session.value?.project_id;
+  if (!projectId) {
+    message.info("独立会话的产物保存在 ~/Multi-agent/未分组/ 下，可前往本地查看");
+    return;
+  }
+  try {
+    const res = await api.projectFolderPath(projectId);
+    if (!res?.path) {
+      message.error("未获取到项目路径");
+      return;
+    }
+    // 桌面端（Tauri）用系统文件管理器打开；浏览器环境提示路径
+    if ((window as any).__TAURI_INTERNALS__) {
+      const { openPath } = await import("@tauri-apps/plugin-opener");
+      await openPath(res.path);
+    } else {
+      message.info(`项目文件夹：${res.path}`);
+    }
+  } catch (e: any) {
+    message.error(e.message || "打开文件夹失败");
+  }
+}
+
 async function toggleFolder(folder: string) {
   if (currentFolder.value === folder) {
     currentFolder.value = null;
@@ -112,20 +137,6 @@ async function toggleFolder(folder: string) {
     folderArtifacts.value = [];
   } finally {
     folderLoading.value = false;
-  }
-}
-
-const extracting = ref(false);
-async function extractArtifacts() {
-  extracting.value = true;
-  try {
-    const res = await api.extractArtifacts(sessionId);
-    message.success(`已提取 ${res.created?.length ?? 0} 个代码产物`);
-    await loadArtifacts();
-  } catch (e: any) {
-    message.error(e.message || "提取失败");
-  } finally {
-    extracting.value = false;
   }
 }
 
@@ -202,7 +213,7 @@ function artifactTypeLabel(t: string) {
   return map[t] || t;
 }
 
-// 代码提取
+// 提取消息里的代码块（供气泡上的复制/运行按钮使用）
 function extractCodeBlocks(content: string): { lang: string; code: string }[] {
   const blocks: { lang: string; code: string }[] = [];
   const re = /```(\w*)\n?([\s\S]*?)```/g;
@@ -573,7 +584,9 @@ function taskStatusLabel(s: string) {
       <div class="panel-half">
         <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
           <span>产物</span>
-          <n-button size="tiny" :loading="extracting" @click="extractArtifacts">提取代码</n-button>
+          <n-space size="small">
+            <n-button size="tiny" quaternary @click="openProjectFolder">打开文件夹</n-button>
+          </n-space>
         </div>
         <div class="panel-scroll">
           <n-empty v-if="folders.length === 0" description="暂无产物（运行代码后生成）" size="small" />

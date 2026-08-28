@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session as DbSession
 
-from ..core.config import ARTIFACT_DIR
+from ..core.config import ARTIFACT_DIR, PROJECTS_DIR
 from ..models.entities import (
     Agent,
     Artifact,
@@ -729,31 +730,6 @@ class ChatManager:
             art_ids.append(art.id)
         return art_ids
 
-    def extract_artifacts(
-        self, session_id: int, folder: str | None = None
-    ) -> list[int]:
-        """[一键提取] 扫描会话历史所有消息，把其中的代码块保存为产物文件。"""
-        folder = folder or f"提取代码_{int(time.time())}"
-        created: list[int] = []
-        msgs = self.db.query(Message).filter_by(session_id=session_id).all()
-        for m in msgs:
-            if m.sender_type != SENDER_AGENT or m.msg_type == MSG_SYSTEM:
-                continue
-            existing = set(m.meta.get("artifact_ids", [])) if m.meta else set()
-            art_ids = self._persist_code_from_message(
-                session_id,
-                m.content,
-                m.msg_type,
-                task_id=(m.meta or {}).get("task_id"),
-                folder=folder,
-            )
-            new_ids = [a for a in art_ids if a not in existing]
-            if new_ids:
-                m.meta = {**(m.meta or {}), "artifact_ids": list(existing) + new_ids}
-                created.extend(new_ids)
-        self.db.commit()
-        return created
-
     def list_artifact_folders(self, session_id: int) -> dict[str, Any]:
         """按文件夹分组统计产物，供右侧面板按文件夹展示。"""
         from sqlalchemy import func
@@ -790,13 +766,21 @@ class ChatManager:
         )
         return {"folders": folders, "ungrouped": ungrouped}
 
+    @staticmethod
+    def _is_managed_path(path: Path) -> bool:
+        """产物文件只允许位于项目目录或旧产物目录内，防路径穿越。"""
+        resolved = str(path.resolve())
+        return resolved.startswith(str(PROJECTS_DIR.resolve())) or resolved.startswith(
+            str(ARTIFACT_DIR.resolve())
+        )
+
     def delete_artifact(self, artifact_id: int) -> bool:
         """删除单个产物（数据库记录 + 磁盘文件）。"""
         art = self.db.get(Artifact, artifact_id)
         if not art:
             return False
         path = Path(art.file_path).resolve()
-        if str(path).startswith(str(ARTIFACT_DIR.resolve())) and path.is_file():
+        if self._is_managed_path(path) and path.is_file():
             try:
                 path.unlink()
             except OSError:
@@ -807,8 +791,14 @@ class ChatManager:
 
     def delete_artifact_folder(self, session_id: int, folder: str) -> int:
         """删除整个项目文件夹（含其下所有产物文件 + 数据库记录）。"""
-        # 防路径穿越：folder 必须是单级合法名称
-        if not folder or "/" in folder or "\\" in folder or ".." in folder:
+        # 防路径穿越：允许「日期/产物名」多级，但拒绝非法字符与上级引用
+        if (
+            not folder
+            or "\\" in folder
+            or ".." in folder
+            or folder.startswith("/")
+            or folder.endswith("/")
+        ):
             return 0
         arts = (
             self.db.query(Artifact)
@@ -818,7 +808,7 @@ class ChatManager:
         n = 0
         for art in arts:
             path = Path(art.file_path).resolve()
-            if str(path).startswith(str(ARTIFACT_DIR.resolve())) and path.is_file():
+            if self._is_managed_path(path) and path.is_file():
                 try:
                     path.unlink()
                 except OSError:
@@ -827,7 +817,7 @@ class ChatManager:
             n += 1
         self.db.commit()
         # 尝试删除已清空的文件夹目录（含分类子目录）
-        root = self._session_art_dir(session_id) / folder
+        root = self._resolve_folder_dir(session_id, folder)
         try:
             if root.is_dir():
                 for sub in sorted(root.iterdir(), reverse=True):
@@ -839,20 +829,84 @@ class ChatManager:
             pass
         return n
 
+    # ---------- 项目磁盘文件夹 ----------
+    def ensure_project_folder(self, project_id: int, name: str | None = None) -> Path:
+        """创建（或复用）项目对应的本地文件夹，并写入 README 索引。"""
+        project = self.db.get(Project, project_id)
+        if not project:
+            raise ValueError("项目不存在")
+        name = name or project.name
+        d = PROJECTS_DIR / self._safe_dir_name(name)
+        d.mkdir(parents=True, exist_ok=True)
+        readme = d / "README.md"
+        if not readme.exists():
+            try:
+                readme.write_text(
+                    f"# {name}\n\n"
+                    "> 本目录由 Multi-agent 自动创建，项目内生成的代码 / 文档 / 图片 / 运行输出会自动保存到此处。\n\n"
+                    f"- 创建时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+        return d
+
+    def project_folder_path(self, project_id: int) -> Path | None:
+        """返回项目对应的本地文件夹绝对路径（不存在时为 None）。"""
+        project = self.db.get(Project, project_id)
+        if not project:
+            return None
+        return PROJECTS_DIR / self._safe_dir_name(project.name)
+
+    def rename_project_folder(self, project_id: int, old_name: str, new_name: str) -> None:
+        """重命名项目时同步重命名本地文件夹（目标已存在则跳过，不丢数据）。"""
+        old = PROJECTS_DIR / self._safe_dir_name(old_name)
+        new = PROJECTS_DIR / self._safe_dir_name(new_name)
+        if old == new or not old.exists() or not old.is_dir():
+            return
+        if new.exists():
+            return
+        try:
+            old.rename(new)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _safe_dir_name(name: str) -> str:
+        """把项目/任务名转成安全的本地文件夹名（去掉路径分隔符与非法字符）。"""
+        s = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", (name or "").strip())
+        s = s.strip(" .")[:80] or "未命名"
+        return s
+
+    def _project_root(self, session_id: int) -> Path:
+        """产物根目录：项目内会话 -> ~/Multi-agent/{项目名}；独立会话 -> ~/Multi-agent/未分组/session_{id}。"""
+        session = self.db.get(ChatSession, session_id)
+        if session and session.project_id:
+            project = self.db.get(Project, session.project_id)
+            if project:
+                return PROJECTS_DIR / self._safe_dir_name(project.name)
+        return PROJECTS_DIR / "未分组" / f"session_{session_id}"
+
     def _session_art_dir(self, session_id: int) -> Path:
-        d = ARTIFACT_DIR / f"session_{session_id}"
+        d = self._project_root(session_id)
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def _resolve_folder_dir(self, session_id: int, folder: str | None) -> Path:
+        """把「日期/产物名」等多级任务文件夹解析为项目下的磁盘路径（逐级清洗，防路径穿越）。"""
+        base = self._session_art_dir(session_id)
+        if not folder:
+            return base
+        parts = [self._safe_dir_name(x) for x in str(folder).split("/") if x]
+        if not parts:
+            return base
+        return base.joinpath(*parts)
 
     def _folder_art_dir(
         self, session_id: int, folder: str | None, subtype: str | None = None
     ) -> Path:
-        """返回产物目录；folder 非空时归入项目子目录，subtype 进一步分类（code/docs/output/images）。"""
-        base = self._session_art_dir(session_id)
-        if not folder:
-            d = base
-        else:
-            d = base / folder
+        """返回产物目录；按「项目/日期/产物名」归组，subtype 进一步分类（code/docs/output/images）。"""
+        d = self._resolve_folder_dir(session_id, folder)
         if subtype:
             d = d / subtype
         d.mkdir(parents=True, exist_ok=True)
@@ -866,8 +920,12 @@ class ChatManager:
         "制作", "完成", "帮我", "请", "给一个", "写", "做",
     )
 
+    def _dated_folder(self, name: str) -> str:
+        """把产物/任务名挂到当天日期下，形成「日期/名称」两级文件夹。"""
+        return f"{datetime.now().strftime('%Y-%m-%d')}/{name}"
+
     def _make_folder(self, title: str) -> str:
-        """生成简短语义化的项目文件夹名（去动词前缀+截短；重名自动加序号）。"""
+        """生成「日期/产物名」两级任务文件夹名（日期=派活当天；去动词前缀+截短；同日重名自动加序号）。"""
         t = re.sub(r"[^\w\u4e00-\u9fff]+", "", title or "")
         for p in self._VERB_PREFIXES:
             if t.startswith(p):
@@ -880,12 +938,13 @@ class ChatManager:
             .filter(Task.folder.isnot(None))
             .all()
         }
+        date = datetime.now().strftime("%Y-%m-%d")
         name = base
         n = 2
-        while name in existing:
+        while f"{date}/{name}" in existing:
             name = f"{base}({n})"
             n += 1
-        return name
+        return f"{date}/{name}"
 
     def _persist_artifact(
         self,
@@ -971,10 +1030,17 @@ class ChatManager:
             },
         )
 
+    _ART_SUBTYPE_DIR = {
+        "image": "images",
+        "doc": "docs",
+        "code": "code",
+        "other": "other",
+    }
+
     def _scan_workdir_artifacts(
         self, session_id: int, workdir: str | None, folder: str | None = None
     ) -> list[Artifact]:
-        """登记沙箱工作目录里由代码生成的附加文件（图片/文档等）。"""
+        """登记沙箱工作目录里由代码生成的附加文件（图片/文档等），并复制到项目产物目录。"""
         if not workdir:
             return []
         excluded = ("main.py", "main.js", "main.sh")
@@ -984,12 +1050,19 @@ class ChatManager:
                 if p.is_file() and p.name not in excluded:
                     suffix = p.suffix.lower()
                     art_type = self._ART_TYPE_BY_SUFFIX.get(suffix, "other")
+                    subtype = self._ART_SUBTYPE_DIR.get(art_type, "other")
+                    dest_dir = self._folder_art_dir(session_id, folder, subtype)
+                    dest = dest_dir / p.name
+                    try:
+                        shutil.copy2(p, dest)
+                    except OSError:
+                        dest = p.resolve()  # 复制失败则回退到原文件（仍可读）
                     created.append(
                         self._persist_artifact(
                             session_id,
                             type=art_type,
                             name=p.name,
-                            file_path=str(p.resolve()),
+                            file_path=str(dest),
                             folder=folder,
                             meta={
                                 "kind": "sandbox_file",
@@ -1028,11 +1101,12 @@ class ChatManager:
         session = self._get_session(session_id)
         result = await run_code(code, language=language, timeout=timeout, use_docker=use_docker)
 
-        # 产物沉淀：源代码 / 运行输出 / 沙箱生成的附加文件（归入「运行测试」文件夹）
+        # 产物沉淀：源代码 / 运行输出 / 沙箱生成的附加文件（归入当天「运行测试」文件夹）
+        run_folder = self._dated_folder("运行测试")
         try:
-            self._save_code_artifact(session.id, code, language, folder="运行测试")
-            self._save_output_artifact(session.id, result, folder="运行测试")
-            self._scan_workdir_artifacts(session.id, result.workdir, folder="运行测试")
+            self._save_code_artifact(session.id, code, language, folder=run_folder)
+            self._save_output_artifact(session.id, result, folder=run_folder)
+            self._scan_workdir_artifacts(session.id, result.workdir, folder=run_folder)
         except Exception:  # noqa: BLE001  产物登记失败不影响运行结果
             self.db.rollback()
 
