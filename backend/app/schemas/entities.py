@@ -15,6 +15,7 @@ class ORMBase(BaseModel):
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = None
+    folder_path: str | None = None  # 可选：绑定的本地产物目录（绝对路径）
 
 
 class ProjectOut(ORMBase):
@@ -23,6 +24,7 @@ class ProjectOut(ORMBase):
     description: str | None
     status: str
     memory: str | None
+    folder_path: str | None
     created_at: datetime
 
 

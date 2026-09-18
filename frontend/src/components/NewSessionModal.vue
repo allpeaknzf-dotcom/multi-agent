@@ -19,16 +19,23 @@ const loading = ref(false);
 const creating = ref(false);
 
 const newTitle = ref("");
-const selectedProjectId = ref<number | null>(null);
+const selectedProjectId = ref<number | string | null>(null);
 const selectedAgentIds = ref<number[]>([]);
 const selectedHostId = ref<number | null>(null);
 
-const projectOptions = computed(() => [
-  { label: "不在项目中（独立对话）", value: 0 },
-  ...projects.value
+const NEW_PROJECT_PREFIX = "__new_project__";
+
+const projectOptions = computed(() =>
+  projects.value
     .filter((p) => p.status !== "archived")
-    .map((p) => ({ label: p.name, value: p.id })),
-]);
+    .map((p) => ({ label: p.name, value: p.id }))
+);
+
+// 输入一个不存在的项目名 → 返回待创建标记选项（创建会话时自动新建项目）
+function handleProjectCreate(label: string) {
+  const name = label.trim();
+  return { label: name, value: `${NEW_PROJECT_PREFIX}${name}` };
+}
 
 const hostOptions = computed(() =>
   agents.value
@@ -65,14 +72,23 @@ async function create() {
   }
   creating.value = true;
   try {
-    const pid = selectedProjectId.value || null;
+    // 项目解析：输入的新名字 → 自动创建项目；数字 → 已有项目；null → 独立对话
+    let pid: number | null = null;
+    const v = selectedProjectId.value;
+    if (typeof v === "string" && v.startsWith(NEW_PROJECT_PREFIX)) {
+      const name = v.slice(NEW_PROJECT_PREFIX.length);
+      const p = await api.createProject(name);
+      pid = p.id;
+    } else {
+      pid = (v as number) || null;
+    }
     const s = await api.createSession({
       project_id: pid,
       title: newTitle.value.trim() || "新对话",
       agent_ids: selectedAgentIds.value,
       orchestrator_agent_id: selectedHostId.value,
     });
-    message.success("对话已创建");
+    message.success(pid ? "项目与对话已创建" : "对话已创建");
     emit("update:show", false);
     emit("created");
     if (pid) {
@@ -96,8 +112,11 @@ async function create() {
           <n-select
             v-model:value="selectedProjectId"
             :options="projectOptions"
-            placeholder="选择项目，或保持独立对话"
+            placeholder="选择已有项目，或输入新项目名直接创建"
             clearable
+            filterable
+            tag
+            :on-create="handleProjectCreate"
           />
         </n-form-item>
         <n-form-item label="对话标题">

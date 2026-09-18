@@ -48,6 +48,11 @@ def _migrate() -> None:
                 conn.execute(
                     text("ALTER TABLE projects ADD COLUMN memory TEXT DEFAULT ''")
                 )
+        if "folder_path" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE projects ADD COLUMN folder_path VARCHAR(500)")
+                )
     if "chat_sessions" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("chat_sessions")}
         if "status" not in cols:

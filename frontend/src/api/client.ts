@@ -19,10 +19,10 @@ export const api = {
 
   // 项目
   listProjects: () => req<any[]>("/api/projects"),
-  createProject: (name: string, description?: string) =>
+  createProject: (name: string, description?: string, folderPath?: string) =>
     req<any>("/api/projects", {
       method: "POST",
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify({ name, description, folder_path: folderPath || null }),
     }),
   getProject: (id: number) => req<any>(`/api/projects/${id}`),
   renameProject: (id: number, name: string) =>
@@ -35,7 +35,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ archived }),
     }),
-  deleteProject: (id: number) => req<any>(`/api/projects/${id}`, { method: "DELETE" }),
+  deleteProject: (id: number, deleteFolder = false) =>
+    req<any>(`/api/projects/${id}?delete_folder=${deleteFolder}`, {
+      method: "DELETE",
+    }),
   getProjectMemory: (id: number) => req<any>(`/api/projects/${id}/memory`),
   updateProjectMemory: (id: number, memory: string) =>
     req<any>(`/api/projects/${id}/memory`, {
@@ -46,6 +49,8 @@ export const api = {
     req<any[]>(`/api/projects/${projectId}/sessions`),
   listRecentSessions: (limit = 30, archived = false) =>
     req<any[]>(`/api/recent-sessions?limit=${limit}&archived=${archived}`),
+  listAllSessions: (limit = 500) =>
+    req<any[]>(`/api/recent-sessions?limit=${limit}&all_sessions=true`),
 
   // Key 管理
   listKeys: () => req<any[]>("/api/keys"),

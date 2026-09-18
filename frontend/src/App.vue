@@ -16,6 +16,13 @@ const recent = ref<any[]>([]);
 const archivedRecent = ref<any[]>([]);
 const query = ref("");
 const showNew = ref(false);
+const showNewProject = ref(false);
+const newProjectName = ref("");
+const newProjectFolder = ref("");
+const showHistory = ref(false);
+const historySessions = ref<any[]>([]);
+const historyQuery = ref("");
+const historyLoading = ref(false);
 const showSettings = ref(false);
 const settingsTab = ref("archive");
 
@@ -105,6 +112,67 @@ async function load() {
   } catch (e: any) {
     console.error("加载侧边栏失败", e);
   }
+}
+
+// 新建项目（侧边栏「项目」分组右侧 ＋）
+async function createProject() {
+  const name = newProjectName.value.trim();
+  if (!name) return;
+  try {
+    const p = await api.createProject(name, undefined, newProjectFolder.value.trim() || undefined);
+    showNewProject.value = false;
+    newProjectName.value = "";
+    newProjectFolder.value = "";
+    await load();
+    router.push(`/projects/${p.id}`);
+  } catch (e: any) {
+    console.error("创建项目失败", e);
+  }
+}
+
+// 历史对话管理
+async function openHistory() {
+  showHistory.value = true;
+  historyQuery.value = "";
+  await loadHistory();
+}
+async function loadHistory() {
+  historyLoading.value = true;
+  try {
+    historySessions.value = await api.listAllSessions(500);
+  } catch (e: any) {
+    console.error("加载历史对话失败", e);
+  } finally {
+    historyLoading.value = false;
+  }
+}
+const filteredHistory = computed(() => {
+  const q = historyQuery.value.trim().toLowerCase();
+  if (!q) return historySessions.value;
+  return historySessions.value.filter((s) =>
+    String(s.title || "").toLowerCase().includes(q)
+  );
+});
+async function restoreHistorySession(s: any) {
+  try {
+    await api.archiveSession(s.id, false);
+    await loadHistory();
+  } catch (e: any) {
+    console.error("恢复对话失败", e);
+  }
+}
+async function deleteHistorySession(s: any) {
+  try {
+    await api.deleteSession(s.id);
+    await loadHistory();
+    load();
+  } catch (e: any) {
+    console.error("删除对话失败", e);
+  }
+}
+function gotoHistorySession(s: any) {
+  showHistory.value = false;
+  router.push(sessionPath(s));
 }
 
 // 重命名
@@ -261,7 +329,12 @@ watch(() => route.fullPath, load);
               <div class="sb-group">
                 <div class="sb-group-title" @click="collapsed.projects = !collapsed.projects">
                   <span>项目</span>
-                  <span class="sb-caret">{{ collapsed.projects ? "▸" : "▾" }}</span>
+                  <span class="sb-title-right">
+                    <span class="sb-add-project" title="新建项目" @click.stop="showNewProject = true">＋</span>
+                    <span class="sb-add-project" title="历史对话管理" @click.stop="openHistory">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                    </span>
+                  </span>
                 </div>
                 <div v-show="!collapsed.projects" class="sb-group-list">
                   <template v-if="filteredProjects.length">
@@ -692,6 +765,66 @@ watch(() => route.fullPath, load);
             </div>
           </div>
 
+          <!-- 新建项目 -->
+          <n-modal v-model:show="showNewProject" preset="card" title="新建项目" style="width: 460px">
+            <n-space vertical size="small">
+              <n-input
+                v-model:value="newProjectName"
+                placeholder="项目名称（必填）"
+                maxlength="60"
+                @keydown.enter.prevent="createProject"
+              />
+              <n-input
+                v-model:value="newProjectFolder"
+                placeholder="绑定本地文件夹（可选）：如 /Users/me/projects/my-app 或 D:\work\my-app"
+                clearable
+              />
+              <span class="np-tip">不填则产物保存到默认工作区 ~/Multi-agent/项目名 下；填写后将全部保存到该文件夹。</span>
+            </n-space>
+            <template #footer>
+              <n-space justify="end">
+                <n-button @click="showNewProject = false">取消</n-button>
+                <n-button type="primary" :disabled="!newProjectName.trim()" @click="createProject">创建</n-button>
+              </n-space>
+            </template>
+          </n-modal>
+
+          <!-- 历史对话管理 -->
+          <n-modal v-model:show="showHistory" preset="card" title="历史对话管理" style="width: 560px">
+            <n-input
+              v-model:value="historyQuery"
+              placeholder="搜索历史对话标题…"
+              clearable
+              size="small"
+              style="margin-bottom: 10px"
+            />
+            <div class="history-list">
+              <n-spin :show="historyLoading">
+                <div v-if="!historyLoading && filteredHistory.length === 0" class="history-empty">暂无历史对话</div>
+                <div
+                  v-for="s in filteredHistory"
+                  :key="s.id"
+                  class="history-item"
+                  @click="gotoHistorySession(s)"
+                >
+                  <span class="history-icon">💬</span>
+                  <span class="history-label">{{ s.title || "未命名对话" }}</span>
+                  <span v-if="s.project_id" class="history-project">📁 {{ projectName(s.project_id) }}</span>
+                  <n-tag v-if="s.status === 'archived'" size="tiny" type="warning">已归档</n-tag>
+                  <span class="history-actions" @click.stop>
+                    <n-button v-if="s.status === 'archived'" size="tiny" quaternary @click="restoreHistorySession(s)">恢复</n-button>
+                    <n-popconfirm @positive-click="deleteHistorySession(s)">
+                      <template #trigger>
+                        <n-button size="tiny" quaternary type="error">删除</n-button>
+                      </template>
+                      确定删除对话「{{ s.title }}」？其下消息、任务与产物将一并删除且不可恢复。
+                    </n-popconfirm>
+                  </span>
+                </div>
+              </n-spin>
+            </div>
+          </n-modal>
+
           <!-- 重命名 -->
           <n-modal v-model:show="showRename" preset="card" :title="`重命名${renameTarget?.type === 'project' ? '项目' : '会话'}`" style="width: 440px">
             <n-input v-model:value="renameValue" placeholder="名称" maxlength="120" @keydown.enter.prevent="confirmRename" />
@@ -777,6 +910,80 @@ watch(() => route.fullPath, load);
 .sb-caret {
   font-size: 10px;
   color: #bbb;
+}
+.sb-title-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sb-add-project {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  color: #888;
+  padding: 1px 4px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+  cursor: pointer;
+}
+.sb-add-project:hover {
+  color: #4f46e5;
+  background: #e8e9fd;
+}
+.sb-group-title:hover .sb-add-project {
+  opacity: 1;
+}
+.np-tip {
+  font-size: 12px;
+  color: #999;
+  line-height: 1.5;
+}
+.history-list {
+  max-height: 420px;
+  overflow-y: auto;
+}
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.history-item:hover {
+  background: #eef0f3;
+}
+.history-icon {
+  flex-shrink: 0;
+}
+.history-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-project {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #999;
+}
+.history-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.history-empty {
+  padding: 30px 0;
+  text-align: center;
+  color: #999;
+  font-size: 13px;
 }
 .sb-group-list {
   padding-bottom: 4px;

@@ -87,7 +87,11 @@ def delete_template(tid: int, db: DbSession = Depends(get_session)):
 def create_project(
     body: schemas.ProjectCreate, db: DbSession = Depends(get_session)
 ):
-    p = models.Project(name=body.name, description=body.description)
+    p = models.Project(
+        name=body.name,
+        description=body.description,
+        folder_path=(body.folder_path or "").strip() or None,
+    )
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -118,13 +122,21 @@ def get_project(project_id: int, db: DbSession = Depends(get_session)):
 
 
 @router.delete("/api/projects/{project_id}")
-def delete_project(project_id: int, db: DbSession = Depends(get_session)):
+def delete_project(
+    project_id: int,
+    delete_folder: bool = False,
+    db: DbSession = Depends(get_session),
+):
     p = db.get(models.Project, project_id)
     if not p:
         raise HTTPException(404, "项目不存在")
+    manager = ChatManager(db)
+    folder_deleted = False
+    if delete_folder:
+        folder_deleted = manager.delete_project_folder(project_id)
     db.delete(p)  # 级联删除会话/消息/任务
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "folder_deleted": folder_deleted}
 
 
 @router.put("/api/projects/{project_id}/archive", response_model=schemas.ProjectOut)
@@ -385,11 +397,15 @@ async def create_session(
 def list_recent_sessions(
     limit: int = 30,
     archived: bool = False,
+    all_sessions: bool = False,
     db: DbSession = Depends(get_session),
 ):
-    """archived=false 返回进行中的独立对话（侧边栏「最近」）；archived=true 返回所有已归档会话（含项目内，供「归档与恢复」统一找回）。"""
+    """archived=false 返回进行中的独立对话（侧边栏「最近」）；archived=true 返回所有已归档会话（含项目内）；
+    all_sessions=true 返回全部会话（历史对话管理用）。"""
     q = db.query(models.ChatSession)
-    if archived:
+    if all_sessions:
+        pass
+    elif archived:
         # 归档列表：包含项目内会话，方便在「归档与恢复」里统一找回
         q = q.filter(models.ChatSession.status == "archived")
     else:

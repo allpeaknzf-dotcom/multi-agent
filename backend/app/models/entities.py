@@ -31,6 +31,7 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="active")  # active/archived
     memory: Mapped[str] = mapped_column(Text, default="")  # 项目级长期记忆（markdown）
+    folder_path: Mapped[str | None] = mapped_column(String(500), nullable=True)  # 绑定的本地产物目录（可选）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
     sessions: Mapped[list["ChatSession"]] = relationship(

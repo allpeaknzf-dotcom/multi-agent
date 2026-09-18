@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from "vue";
+import { onMounted, ref, computed, h } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDialog, useMessage } from "naive-ui";
 import { api } from "../api/client";
@@ -76,7 +76,13 @@ async function load() {
     project.value = await api.getProject(projectId);
     sessions.value = await api.listSessions(projectId);
   } catch (e: any) {
-    message.error(e.message || "加载失败");
+    // 项目不存在（已删除）时提示并回到首页，避免停留在失效页面操作报错
+    if (e.message?.includes("404") || e.message?.includes("不存在")) {
+      message.error("项目不存在或已被删除");
+      router.push("/");
+    } else {
+      message.error(e.message || "加载失败");
+    }
   } finally {
     loading.value = false;
   }
@@ -167,16 +173,40 @@ function toggleProjectArchive() {
   });
 }
 
+const deleteFolderCheck = ref(false);
+
 function removeProject() {
+  deleteFolderCheck.value = false;
   dialog.warning({
     title: "删除项目",
-    content: `确定删除项目「${project.value?.name}」吗？其下所有会话、消息、任务将一并删除，且不可恢复。`,
+    content: () =>
+      h("div", null, [
+        h("div", null, `确定删除项目「${project.value?.name}」吗？其下所有会话、消息、任务将一并删除，且不可恢复。`),
+        h(
+          "div",
+          { style: "margin-top:12px" },
+          project.value?.folder_path
+            ? h("div", { style: "color:#999;font-size:12px" }, `绑定目录由你管理，删除项目不会影响：${project.value.folder_path}`)
+            : h(
+                "label",
+                { style: "display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px" },
+                [
+                  h("input", {
+                    type: "checkbox",
+                    checked: deleteFolderCheck.value,
+                    onChange: (e: any) => (deleteFolderCheck.value = e.target.checked),
+                  }),
+                  h("span", null, "同时删除本地产物文件夹（~/Multi-agent/项目名）"),
+                ]
+              )
+        ),
+      ]),
     positiveText: "删除",
     negativeText: "取消",
     onPositiveClick: async () => {
       try {
-        await api.deleteProject(projectId);
-        message.success("已删除");
+        const r = await api.deleteProject(projectId, deleteFolderCheck.value);
+        message.success(r.folder_deleted ? "已删除（含本地文件夹）" : "已删除");
         router.push("/");
       } catch (e: any) {
         message.error(e.message || "删除失败");
@@ -211,6 +241,7 @@ onMounted(load);
       </n-dropdown>
       <n-button size="small" type="primary" @click="showCreate = true">新建会话</n-button>
     </div>
+    <div v-if="project?.folder_path" class="pd-folder">📂 绑定目录：{{ project.folder_path }}（产物直接保存到此文件夹）</div>
 
     <n-tabs v-model:value="filter" type="line" style="margin-bottom: 12px">
       <n-tab-pane name="active" :tab="`进行中 (${activeCount})`" />
@@ -317,7 +348,16 @@ onMounted(load);
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 8px;
+}
+.pd-folder {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 14px;
+  padding: 6px 10px;
+  background: #f6f6fb;
+  border-radius: 6px;
+  display: inline-block;
 }
 .pd-title {
   font-size: 20px;

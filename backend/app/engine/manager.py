@@ -831,20 +831,24 @@ class ChatManager:
 
     # ---------- 项目磁盘文件夹 ----------
     def ensure_project_folder(self, project_id: int, name: str | None = None) -> Path:
-        """创建（或复用）项目对应的本地文件夹，并写入 README 索引。"""
+        """创建（或复用）项目对应的本地文件夹，并写入 README 索引。绑定目录优先，未绑定则用默认工作区。"""
         project = self.db.get(Project, project_id)
         if not project:
             raise ValueError("项目不存在")
         name = name or project.name
-        d = PROJECTS_DIR / self._safe_dir_name(name)
+        if project.folder_path:
+            d = Path(project.folder_path).expanduser()
+        else:
+            d = PROJECTS_DIR / self._safe_dir_name(name)
         d.mkdir(parents=True, exist_ok=True)
         readme = d / "README.md"
         if not readme.exists():
             try:
                 readme.write_text(
                     f"# {name}\n\n"
-                    "> 本目录由 Multi-agent 自动创建，项目内生成的代码 / 文档 / 图片 / 运行输出会自动保存到此处。\n\n"
-                    f"- 创建时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
+                    "> 该目录由 Multi-agent 项目自动管理，项目内生成的代码 / 文档 / 图片 / 运行输出会自动保存到此处。\n\n"
+                    f"- 创建时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    f"- 绑定项目：{name}（ID {project.id}）\n",
                     encoding="utf-8",
                 )
             except OSError:
@@ -859,7 +863,11 @@ class ChatManager:
         return PROJECTS_DIR / self._safe_dir_name(project.name)
 
     def rename_project_folder(self, project_id: int, old_name: str, new_name: str) -> None:
-        """重命名项目时同步重命名本地文件夹（目标已存在则跳过，不丢数据）。"""
+        """重命名项目时同步重命名本地文件夹（目标已存在则跳过，不丢数据）。
+        绑定目录由用户指定，不随项目重命名。"""
+        project = self.db.get(Project, project_id)
+        if not project or project.folder_path:
+            return
         old = PROJECTS_DIR / self._safe_dir_name(old_name)
         new = PROJECTS_DIR / self._safe_dir_name(new_name)
         if old == new or not old.exists() or not old.is_dir():
@@ -871,6 +879,21 @@ class ChatManager:
         except OSError:
             pass
 
+    def delete_project_folder(self, project_id: int) -> bool:
+        """删除项目的默认工作区文件夹（仅未绑定目录的项目）。返回是否已删除。
+        绑定目录是用户自有资产，绝不在此删除。"""
+        project = self.db.get(Project, project_id)
+        if not project or project.folder_path:
+            return False
+        d = PROJECTS_DIR / self._safe_dir_name(project.name)
+        if not d.exists() or not d.is_dir():
+            return False
+        try:
+            shutil.rmtree(d)
+            return True
+        except OSError:
+            return False
+
     @staticmethod
     def _safe_dir_name(name: str) -> str:
         """把项目/任务名转成安全的本地文件夹名（去掉路径分隔符与非法字符）。"""
@@ -879,11 +902,13 @@ class ChatManager:
         return s
 
     def _project_root(self, session_id: int) -> Path:
-        """产物根目录：项目内会话 -> ~/Multi-agent/{项目名}；独立会话 -> ~/Multi-agent/未分组/session_{id}。"""
+        """产物根目录：绑定目录 > 项目工作区 ~/Multi-agent/{项目名}；独立会话 -> ~/Multi-agent/未分组/session_{id}。"""
         session = self.db.get(ChatSession, session_id)
         if session and session.project_id:
             project = self.db.get(Project, session.project_id)
             if project:
+                if project.folder_path:
+                    return Path(project.folder_path).expanduser()
                 return PROJECTS_DIR / self._safe_dir_name(project.name)
         return PROJECTS_DIR / "未分组" / f"session_{session_id}"
 
