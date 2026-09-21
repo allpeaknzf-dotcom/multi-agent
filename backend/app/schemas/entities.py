@@ -224,6 +224,7 @@ class RunCodeRequest(BaseModel):
     code: str
     language: str = "python"
     timeout: int = 60
+    use_docker: bool = False  # True 时走 Docker L2（本机无 Docker 则自动回退 L1）
 
 
 class RunCodeOut(BaseModel):

@@ -187,6 +187,13 @@ async function downloadArtifact(art: any) {
 }
 
 async function viewArtifact(art: any) {
+  viewingArtifact.value = art;
+  // 图片/视频直接用下载地址内嵌预览，不抓文本
+  if (art.type === "image" || art.type === "video") {
+    artifactContent.value = "";
+    showArtifact.value = true;
+    return;
+  }
   try {
     const res = await api.fetchArtifact(art.id);
     if (!res.ok) {
@@ -194,11 +201,48 @@ async function viewArtifact(art: any) {
       return;
     }
     artifactContent.value = await res.text();
-    viewingArtifact.value = art;
     showArtifact.value = true;
   } catch (e: any) {
     message.error(e.message || "读取失败");
   }
+}
+
+// 图片/视频产物的下载地址（同源直接内嵌）
+function artifactMediaUrl(art: any) {
+  return api.artifactDownloadUrl(art.id);
+}
+// 判断是否 PDF（按文件名后缀）
+function isPdfArtifact(art: any) {
+  if (!art?.name) return false;
+  return art.name.toLowerCase().endsWith(".pdf");
+}
+// 对话里的附件消息：点击预览（复用产物查看弹窗）
+const OFFICE_EXTS = new Set([".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".rtf", ".csv"]);
+
+function previewAttachment(m: any) {
+  const fn = (m.meta.file_name || "").toLowerCase();
+  // PDF / Office 文档：新标签页打开（PDF 原生查看器，Office 由后端转 PDF）
+  if (fn.endsWith(".pdf") || OFFICE_EXTS.has(fn.slice(fn.lastIndexOf(".")))) {
+    const isOffice = OFFICE_EXTS.has(fn.slice(fn.lastIndexOf(".")));
+    const url = isOffice
+      ? `${api.artifactDownloadUrl(m.meta.artifact_id).replace(/\/download$/, "/preview")}`
+      : api.artifactDownloadUrl(m.meta.artifact_id);
+    window.open(url, "_blank");
+    return;
+  }
+  viewingArtifact.value = {
+    id: m.meta.artifact_id,
+    name: m.meta.file_name,
+    type: m.meta.artifact_type,
+  };
+  if (m.meta.artifact_type === "image" || m.meta.artifact_type === "video") {
+    artifactContent.value = "";
+  } else {
+    api.fetchArtifact(m.meta.artifact_id).then(async (r) => {
+      artifactContent.value = await r.text();
+    });
+  }
+  showArtifact.value = true;
 }
 
 function artifactTypeLabel(t: string) {
@@ -277,19 +321,65 @@ function cancelTipHide() {
   }
 }
 
-// 发送
+// 附件收集：选择文件先进入待发栏（最多 10 个），点「发送」时才一起上传发出
+const MAX_FILES = 10;
+const uploading = ref(false);
+const fileInput = ref<HTMLInputElement | null>(null);
+const pendingFiles = ref<File[]>([]);
+
+function addFiles(e: any) {
+  const files: File[] = Array.from(e.target?.files || []);
+  if (!files.length) return;
+  const room = MAX_FILES - pendingFiles.value.length;
+  if (room <= 0) {
+    message.warning(`最多上传 ${MAX_FILES} 个文件`);
+  } else if (files.length > room) {
+    message.warning(`最多上传 ${MAX_FILES} 个文件，已保留前 ${room} 个`);
+  }
+  pendingFiles.value.push(...files.slice(0, room));
+  if (fileInput.value) fileInput.value.value = "";
+}
+
+function removePendingFile(i: number) {
+  pendingFiles.value.splice(i, 1);
+}
+
+const IMG_EXT = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico"];
+function isImageFile(f: File) {
+  const ext = "." + (f.name.split(".").pop() || "").toLowerCase();
+  return IMG_EXT.includes(ext);
+}
+function fmtSize(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// 发送：先上传待发附件（最多 10 个），再发送文字
 async function send() {
   const content = input.value.trim();
-  if (!content || busy.value) return;
+  const files = pendingFiles.value;
+  if (busy.value) return;
+  if (!content && files.length === 0) return;
   busy.value = true;
-  input.value = ""; // 发送瞬间立即清空输入框
+  uploading.value = true;
   try {
-    await api.sendMessage(sessionId, content, sendTarget.value);
+    // 1. 上传附件（后端各插一条「📎 上传了附件」上下文消息）
+    for (const f of files) {
+      await api.uploadAttachment(sessionId, f);
+    }
+    pendingFiles.value = [];
+    // 2. 发送文字（仅附件时跳过，附件消息已进上下文）
+    if (content) {
+      input.value = "";
+      await api.sendMessage(sessionId, content, sendTarget.value);
+    }
     scrollToBottom();
+    await load();
   } catch (e: any) {
-    if (!input.value) input.value = content; // 失败则恢复内容方便重发
     message.error(e.message || "发送失败");
   } finally {
+    uploading.value = false;
     busy.value = false;
   }
 }
@@ -495,7 +585,20 @@ function taskStatusLabel(s: string) {
           <!-- 用户 -->
           <div v-if="m.sender_type === 'user'" class="bubble user-bubble">
             <div class="msg-sender user-sender">我</div>
-            <div class="msg-content" v-html="renderContent(m.content)"></div>
+            <!-- 附件消息：图片直接缩略图，其他文件卡片 -->
+            <div v-if="m.meta?.kind === 'attachment'" class="msg-attachment">
+              <img
+                v-if="m.meta.artifact_type === 'image'"
+                :src="api.artifactDownloadUrl(m.meta.artifact_id)"
+                class="att-thumb"
+                @click="previewAttachment(m)"
+              />
+              <div v-else class="att-file" @click="previewAttachment(m)">
+                <span class="att-icon">{{ m.meta.artifact_type === 'video' ? '🎬' : '📄' }}</span>
+                <span class="att-name">{{ m.meta.file_name }}</span>
+              </div>
+            </div>
+            <div v-else class="msg-content" v-html="renderContent(m.content)"></div>
           </div>
 
           <!-- Agent -->
@@ -535,7 +638,26 @@ function taskStatusLabel(s: string) {
 
       <!-- 输入 -->
       <div class="input-area">
+        <div v-if="pendingFiles.length" class="pending-files">
+          <div v-for="(f, i) in pendingFiles" :key="i" class="pending-file">
+            <span class="pf-icon">{{ isImageFile(f) ? '🖼' : '📄' }}</span>
+            <span class="pf-name">{{ f.name }}</span>
+            <span class="pf-size">{{ fmtSize(f.size) }}</span>
+            <span class="pf-del" title="移除" @click="removePendingFile(i)">✕</span>
+          </div>
+        </div>
         <div class="input-row">
+          <input
+            ref="fileInput"
+            type="file"
+            multiple
+            accept="*/*"
+            style="display: none"
+            @change="addFiles"
+          />
+          <n-button size="small" quaternary :loading="uploading" title="上传文件/图片（作为上下文供 Agent 读取）" class="at-btn" @click="fileInput?.click()">
+            📎
+          </n-button>
           <n-input
             v-model:value="input"
             type="textarea"
@@ -665,8 +787,26 @@ function taskStatusLabel(s: string) {
     </n-modal>
 
     <!-- 产物查看 -->
-    <n-modal v-model:show="showArtifact" preset="card" :title="`查看产物 · ${viewingArtifact?.name || ''}`" style="width: 680px">
-      <pre class="artifact-preview">{{ artifactContent }}</pre>
+    <n-modal v-model:show="showArtifact" preset="card" :title="`查看产物 · ${viewingArtifact?.name || ''}`" style="width: 760px">
+      <img
+        v-if="viewingArtifact?.type === 'image'"
+        :src="artifactMediaUrl(viewingArtifact)"
+        :alt="viewingArtifact?.name"
+        class="artifact-img"
+      />
+      <video
+        v-else-if="viewingArtifact?.type === 'video'"
+        :src="artifactMediaUrl(viewingArtifact)"
+        controls
+        autoplay
+        class="artifact-video"
+      />
+      <iframe
+        v-else-if="isPdfArtifact(viewingArtifact)"
+        :src="artifactMediaUrl(viewingArtifact)"
+        class="artifact-pdf"
+      />
+      <pre v-else class="artifact-preview">{{ artifactContent }}</pre>
       <template #footer>
         <n-space justify="end">
           <n-button @click="showArtifact = false">关闭</n-button>
@@ -1079,5 +1219,72 @@ function taskStatusLabel(s: string) {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.pending-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 2px 8px;
+}
+.pending-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  background: #f5f5fa;
+  border: 1px solid #e8e8f0;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.pf-icon { flex: none; }
+.pf-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #333;
+}
+.pf-size { flex: none; color: #999; }
+.pf-del {
+  flex: none;
+  cursor: pointer;
+  color: #bbb;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.pf-del:hover { color: #e5484d; }
+.artifact-img {
+  max-width: 100%;
+  max-height: 70vh;
+  border-radius: 6px;
+  display: block;
+  margin: 0 auto;
+}
+.artifact-video {
+  width: 100%;
+  max-height: 70vh;
+  border-radius: 6px;
+  background: #000;
+}
+
+.msg-attachment { margin: 2px 0; }
+.att-thumb {
+  max-width: 220px; max-height: 220px; border-radius: 8px;
+  cursor: pointer; display: block; object-fit: cover;
+  border: 1px solid rgba(0,0,0,.08);
+}
+.att-file {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: rgba(255,255,255,.6);
+  border: 1px solid rgba(0,0,0,.08); border-radius: 8px;
+  cursor: pointer; font-size: 13px; max-width: 260px;
+}
+.att-file:hover { background: rgba(0,0,0,.04); }
+.att-icon { font-size: 18px; }
+.att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.artifact-pdf {
+  width: 100%; height: 70vh; border: none; border-radius: 6px; background: #fff;
 }
 </style>

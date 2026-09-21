@@ -61,13 +61,13 @@ async def run_code_docker(
         "run",
         "--rm",
         "--network",
-        "none",
+        "none",        # 禁网：无法访问外网
         "--memory",
-        "512m",
+        "512m",        # 内存上限
         "--cpus",
-        "1",
+        "1",           # CPU 上限
         "-v",
-        f"{workdir}:/work:ro",
+        f"{workdir}:/work",   # 可写挂载：代码生成的产物（图片等）写回宿主机 workdir
         "-w",
         "/work",
         image,

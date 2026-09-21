@@ -224,6 +224,54 @@ class ChatManager:
         )
         return result.content
 
+    async def _ask_host_with_coordination(
+        self, session: ChatSession, host: Agent, content: str
+    ) -> dict:
+        """主理人前台收口：本次调用临时追加协作规则，让主理人判断是否需要派活。
+        返回 {"user_text": 给用户的回复, "delegate_task": 派活任务名或 None}"""
+        coordination_hint = (
+            "\n\n【你的协作职责（本次对话生效）】\n"
+            "你是本会话的主理人，直接对用户负责。规则：\n"
+            "1) 简单问题（问答、解释、闲聊、一句话能答完）：直接正常回答，不要加任何标记。\n"
+            "2) 复杂任务（需要多个成员协作、写代码、做完整项目、产出多文件）：先给用户一句简短确认"
+            "（如「收到，我安排团队处理，完成后汇总给你」），然后另起一段，严格按下面格式给出派活指令：\n"
+            "[DELEGATE]\n<一句话描述完整任务，尽量具体>\n[/DELEGATE]\n"
+            "系统会自动安排团队协作，最终由你汇总结果告知用户。除上述情况外不要使用 [DELEGATE] 标记。"
+        )
+        # 临时给 host 的 system prompt 追加协作规则（不改 agent 配置）
+        original_system = host.system_prompt
+        host.system_prompt = (host.system_prompt or "") + coordination_hint
+        try:
+            raw = await self._ask_agent(session, host, content)
+        finally:
+            host.system_prompt = original_system
+
+        user_text = raw
+        delegate_task = None
+        if "[DELEGATE]" in raw:
+            import re as _re
+            m = _re.search(r"\[DELEGATE\]\s*(.*?)\s*\[/DELEGATE\]", raw, _re.S)
+            if m:
+                delegate_task = m.group(1).strip()
+                # 给用户的回复去掉标记块
+                user_text = _re.sub(
+                    r"\[DELEGATE\].*?\[/DELEGATE\]", "", raw, flags=_re.S
+                ).strip()
+        return {"user_text": user_text or raw, "delegate_task": delegate_task}
+
+    async def _safe_orchestrate(self, session_id: int, task_description: str) -> None:
+        try:
+            await self.orchestrate(session_id, task_description)
+        except Exception as exc:  # noqa: BLE001
+            self._save_and_push(
+                self._get_session(session_id),
+                sender_type=SENDER_SYSTEM,
+                sender_id=None,
+                sender_name="系统",
+                content=f"主理人派活失败：{exc}",
+                msg_type=MSG_SYSTEM,
+            )
+
     # ---------- 用户消息入口（圆桌 / @ 指定） ----------
     async def handle_user_message(
         self,
@@ -276,7 +324,37 @@ class ChatManager:
             )
             return user_msg
 
-        # 广播：逐个成员回复（串行，避免 SQLite 并发写）
+        # 主理人前台收口模式：有主理人时只让主理人回复；无主理人时回退到广播
+        host = self._get_host(session)
+        if host and host.id in [a.id for a in members]:
+            try:
+                reply = await self._ask_host_with_coordination(session, host, content)
+                self._save_and_push(
+                    session,
+                    sender_type=SENDER_AGENT,
+                    sender_id=host.id,
+                    sender_name=f"{host.name}（主理人）",
+                    content=reply["user_text"],
+                    parent_id=user_msg.id,
+                )
+                # 主理人判定需要派活 -> 异步跑 orchestrate（拆解->派活->验收->汇总）
+                if reply.get("delegate_task"):
+                    asyncio.create_task(
+                        self._safe_orchestrate(session.id, reply["delegate_task"])
+                    )
+            except ProviderError as exc:
+                self._save_and_push(
+                    session,
+                    sender_type=SENDER_SYSTEM,
+                    sender_id=None,
+                    sender_name="系统",
+                    content=f"主理人「{host.name}」调用失败：{exc}",
+                    msg_type=MSG_SYSTEM,
+                    parent_id=user_msg.id,
+                )
+            return user_msg
+
+        # 无主理人：广播所有成员（老行为兼容）
         for agent in members:
             try:
                 reply = await self._ask_agent(session, agent, content)
@@ -1061,6 +1139,109 @@ class ChatManager:
         "code": "code",
         "other": "other",
     }
+
+    _UPLOAD_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico"}
+    _UPLOAD_VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"}
+
+    def save_uploaded_attachment(
+        self, session_id: int, upload_file: Any, notify: bool = True
+    ) -> Artifact:
+        """保存用户上传的附件到对话产物目录「上传附件/」，登记 Artifact，并插入一条上下文消息供 Agent 读取。"""
+        original = Path(upload_file.filename or "未命名").name
+        stem = self._safe_dir_name(Path(original).stem)
+        ext = Path(original).suffix.lower()[:12]
+        name = f"{stem}{ext}" or "未命名"
+        if ext in self._UPLOAD_IMAGE_SUFFIXES:
+            art_type = "image"
+        elif ext in self._UPLOAD_VIDEO_SUFFIXES:
+            art_type = "video"
+        else:
+            art_type = "other"
+
+        upload_dir = self._project_root(session_id) / "上传附件"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        path = upload_dir / name
+        # 同名文件加序号，避免覆盖
+        if path.exists():
+            i = 1
+            while True:
+                candidate = upload_dir / f"{stem}({i}){ext}"
+                if not candidate.exists():
+                    path = candidate
+                    name = candidate.name
+                    break
+                i += 1
+
+        with open(path, "wb") as out:
+            shutil.copyfileobj(upload_file.file, out)
+        size = path.stat().st_size
+
+        # 提取文本内容（让 AI 直接能读到）
+        text_content = ""
+        text_exts = {".txt", ".md", ".py", ".js", ".html", ".css", ".json", ".csv", ".ts", ".java", ".c", ".cpp", ".h", ".sh", ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".log"}
+        try:
+            if ext in text_exts:
+                text_content = path.read_text(encoding="utf-8", errors="replace")[:8000]
+            elif ext == ".pdf":
+                from pypdf import PdfReader
+                reader = PdfReader(str(path))
+                chunks = [page.extract_text() or "" for page in reader.pages[:20]]
+                text_content = "\n".join(chunks)[:8000]
+            elif ext == ".docx":
+                import docx
+                doc = docx.Document(str(path))
+                text_content = "\n".join(p.text for p in doc.paragraphs if p.text)[:8000]
+            elif ext == ".xlsx":
+                import openpyxl
+                wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+                chunks = []
+                for ws in wb.worksheets[:5]:
+                    chunks.append(f"【Sheet: {ws.title}】")
+                    for row in list(ws.iter_rows(values_only=True))[:50]:
+                        chunks.append(" | ".join(str(c) if c is not None else "" for c in row))
+                text_content = "\n".join(chunks)[:8000]
+        except Exception:
+            pass
+
+        art = self._persist_artifact(
+            session_id,
+            type=art_type,
+            name=name,
+            file_path=str(path),
+            folder="上传附件",
+            meta={
+                "kind": "upload",
+                "size": size,
+                "mime": upload_file.content_type or "",
+                "original_name": original,
+            },
+        )
+        if notify:
+            from ..models.entities import Message
+
+            # 附件消息 content：文件名+路径 + 提取的文本内容（供 AI 读取）
+            body = f"📎 上传了附件：{name}\n文件路径：{path}"
+            if text_content:
+                body += f"\n\n--- 文件内容 ---\n{text_content}\n--- 内容结束 ---"
+            msg = Message(
+                session_id=session_id,
+                sender_type="user",
+                sender_name="我",
+                msg_type="text",
+                content=body,
+                meta={
+                    "kind": "attachment",
+                    "file_path": str(path),
+                    "file_name": name,
+                    "artifact_id": art.id,
+                    "artifact_type": art_type,
+                },
+            )
+            self.db.add(msg)
+            self.db.commit()
+            self.db.refresh(msg)
+            self.db.refresh(art)
+        return art
 
     def _scan_workdir_artifacts(
         self, session_id: int, workdir: str | None, folder: str | None = None

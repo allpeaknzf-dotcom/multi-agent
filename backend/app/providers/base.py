@@ -10,7 +10,7 @@ class ChatMessage:
     """对话消息（统一格式）。"""
 
     role: str  # user / assistant / system
-    content: str
+    content: Any  # str 或多模态 list（OpenAI vision 格式）
 
 
 @dataclass

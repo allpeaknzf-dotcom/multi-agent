@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import uuid
+import mimetypes
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session as DbSession
 
@@ -569,11 +570,78 @@ def download_artifact(artifact_id: int, db: DbSession = Depends(get_session)):
         raise HTTPException(403, "非法路径")
     if not path.is_file():
         raise HTTPException(404, "产物文件已丢失")
+    # 按文件扩展名推断 MIME（图片/视频/PDF 返回真实类型，浏览器才能内嵌预览；其余回退 octet-stream）
+    fname = art.name or path.name
+    mime, _ = mimetypes.guess_type(fname)
+    # 图片/视频/PDF 用 inline 让浏览器内嵌渲染；其他用 attachment 触发下载
+    inlineable = mime and (
+        mime.startswith("image/") or mime.startswith("video/") or mime == "application/pdf"
+    )
     return FileResponse(
         path,
-        filename=art.name or path.name,
-        media_type="application/octet-stream",
+        filename=fname,
+        media_type=mime or "application/octet-stream",
+        content_disposition_type="inline" if inlineable else "attachment",
     )
+
+
+import os
+import subprocess
+import tempfile
+
+
+# Office 文档（docx/xlsx/pptx 等）用 LibreOffice 转 PDF 后内嵌预览
+_OFFICE_SUFFIXES = {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".rtf", ".csv"}
+
+
+@router.get("/api/artifacts/{artifact_id}/preview")
+def preview_artifact(artifact_id: int, db: DbSession = Depends(get_session)):
+    """预览接口：图片/视频/PDF 直接走 download；Office 文档用 LibreOffice 转 PDF 后返回。"""
+    art = db.get(models.Artifact, artifact_id)
+    if not art:
+        raise HTTPException(404, "产物不存在")
+    path = Path(art.file_path).resolve()
+    if not path.is_file():
+        raise HTTPException(404, "产物文件已丢失")
+
+    ext = path.suffix.lower()
+    # 非 Office 文档：直接重定向到 download（浏览器自己处理）
+    if ext not in _OFFICE_SUFFIXES:
+        return FileResponse(
+            path,
+            filename=art.name or path.name,
+            media_type=mimetypes.guess_type(art.name or path.name)[0] or "application/octet-stream",
+            content_disposition_type="inline",
+        )
+
+    # Office 文档：用 LibreOffice headless 转 PDF
+    with tempfile.TemporaryDirectory(prefix="ma_preview_") as tmp:
+        out = Path(tmp) / "preview.pdf"
+        try:
+            proc = subprocess.run(
+                [
+                    "soffice", "--headless", "--convert-to", "pdf",
+                    "--outdir", tmp, str(path),
+                ],
+                capture_output=True, text=True, timeout=60,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"文档预览转换失败: {exc}") from exc
+        # soffice 输出文件名 = 原文件名换后缀
+        generated = Path(tmp) / (path.stem + ".pdf")
+        if not generated.is_file():
+            raise HTTPException(500, f"文档转换失败: {proc.stderr[-300:]}")
+        # 读进内存再返回（TemporaryDirectory 退出后文件会被删，不能用 FileResponse 惰性读）
+        from fastapi.responses import Response
+        from urllib.parse import quote
+        pdf_name = path.stem + ".pdf"
+        return Response(
+            content=generated.read_bytes(),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename*=utf-8''{quote(pdf_name)}",
+            },
+        )
 
 
 @router.delete("/api/artifacts/{artifact_id}")
@@ -630,6 +698,30 @@ async def send_message(
         session_id, body.content, recipient=body.recipient
     )
     return msg
+
+
+@router.post("/api/sessions/{session_id}/upload")
+async def upload_attachment(
+    session_id: int,
+    file: UploadFile = File(...),
+    db: DbSession = Depends(get_session),
+):
+    """上传文件/图片附件到当前对话：保存到产物目录「上传附件/」，并作为上下文消息供 Agent 读取。"""
+    if not db.get(models.ChatSession, session_id):
+        raise HTTPException(404, "会话不存在")
+    manager = ChatManager(db)
+    try:
+        art = manager.save_uploaded_attachment(session_id, file)
+    except OSError as exc:
+        raise HTTPException(500, f"保存附件失败: {exc}") from exc
+    return {
+        "id": art.id,
+        "name": art.name,
+        "type": art.type,
+        "folder": art.folder,
+        "file_path": art.file_path,
+        "size": art.meta.get("size"),
+    }
 
 
 @router.post("/api/sessions/{session_id}/orchestrate")
@@ -692,7 +784,7 @@ async def run_code(
         body.code,
         language=body.language,
         timeout=body.timeout,
-        use_docker=False,
+        use_docker=body.use_docker,
     )
     return result
 

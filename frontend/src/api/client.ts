@@ -157,6 +157,20 @@ export const api = {
   artifactDownloadUrl: (artifactId: number) =>
     `${BASE}/api/artifacts/${artifactId}/download`,
   fetchArtifact: (artifactId: number) => fetch(`${BASE}/api/artifacts/${artifactId}/download`),
+  // 上传附件（multipart/form-data，供 Agent 作为上下文使用）
+  uploadAttachment: async (sessionId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/upload`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as any).detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
 };
 
 // WebSocket 实时订阅（群聊消息 / 任务状态 / Agent 状态）

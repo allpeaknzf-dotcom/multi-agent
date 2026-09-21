@@ -477,8 +477,8 @@ watch(() => route.fullPath, load);
                   </div>
                   <div class="about-name">Multi-agent · 多 Agent 协作客户端</div>
                   <p class="about-desc">
-                    让多个不同 AI Agent（Claude / Codex / Hermes / 豆包 / 自定义）在同一个「群聊」里共同辩论、学习、分工完成任务，
-                    并可选一个 Agent 担任主理人，负责任务拆解、派活与验收。
+                    让多个不同 AI Agent 在同一个「群聊」里协作完成任务，指定一个主理人前台收口：
+                    简单问题直接答，复杂任务自动拆解派活、验收汇总后告诉你。支持上传图片 / PDF / Office 文档，AI 直接看懂内容。
                   </p>
                 </div>
 
@@ -591,6 +591,13 @@ watch(() => route.fullPath, load);
                         <div class="about-feat-desc">产物代码在隔离环境运行（L1 本地受限进程 / L2 Docker），结果回喂 Agent 自我修正。</div>
                       </div>
                     </div>
+                    <div class="about-feat">
+                      <div class="about-feat-icon">📎</div>
+                      <div class="about-feat-body">
+                        <div class="about-feat-title">附件多模态</div>
+                        <div class="about-feat-desc">上传图片 / PDF / Office 文档，AI 直接看懂内容。</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -604,6 +611,9 @@ watch(() => route.fullPath, load);
                     <div class="help-tip"><span class="help-tip-k">多轮验收</span>主理人验收不通过时可要求重做，直到产出满意为止。</div>
                     <div class="help-tip"><span class="help-tip-k">编辑记忆</span>项目记忆支持手动增删，把关键结论固化下来供后续对话参考。</div>
                     <div class="help-tip"><span class="help-tip-k">模板导入</span>在「岗位模板」里用内置模板一键生成 Agent，无需从零配置。</div>
+                    <div class="help-tip"><span class="help-tip-k">附件上传</span>点输入区 📎 多选文件（最多 10 个），先在待发栏预览/删除，点发送才真正上传。</div>
+                    <div class="help-tip"><span class="help-tip-k">多模态看图</span>上传图片 / PDF 后，AI 直接看到内容；PDF 前 3 页转图传视觉模型，扫描版发票也能读。</div>
+                    <div class="help-tip"><span class="help-tip-k">Office 预览</span>docx / xlsx / pptx 点击后新标签页打开（后端自动转 PDF），不再是下载。</div>
                   </div>
                 </div>
 
@@ -625,6 +635,12 @@ watch(() => route.fullPath, load);
                     </n-collapse-item>
                     <n-collapse-item title="产物在哪里查看？">
                       <div class="help-faq-answer">沙箱运行产生的源代码、运行输出、图片文档会自动沉淀到右侧「产物」面板，可在线查看或下载到本地。</div>
+                    </n-collapse-item>
+                    <n-collapse-item title="上传的附件 AI 能读到吗？支持哪些格式？">
+                      <div class="help-faq-answer">图片（png/jpg/gif）AI 直接看图；PDF 前 3 页转图 + 全文文字提取，扫描版也能读；docx/xlsx 自动提取文字；txt/md/py 等文本直接读内容。视频暂不支持识别。</div>
+                    </n-collapse-item>
+                    <n-collapse-item title="主理人模式和原来有什么区别？">
+                      <div class="help-faq-answer">有主理人的会话默认只有主理人回复，不会 7 个 Agent 排队刷屏；简单问题它直接答，复杂任务它在后台拆活派给其他成员，验收后汇总告诉你结果。</div>
                     </n-collapse-item>
                   </n-collapse>
                 </div>
@@ -671,7 +687,7 @@ watch(() => route.fullPath, load);
                   </div>
                   <div class="about-name">Multi-agent · 多 Agent 协作</div>
                   <div class="about-ver">
-                    <span class="about-ver-badge">v0.1.0</span>
+                    <span class="about-ver-badge">v0.2.0</span>
                   </div>
                   <p class="about-desc">
                     让多个不同 AI Agent 在同一个「群聊」里共同辩论、分工、完成任务，
@@ -725,6 +741,13 @@ watch(() => route.fullPath, load);
                         <div class="about-feat-desc">关键结论自动沉淀，对话自动参考</div>
                       </div>
                     </div>
+                    <div class="about-feat">
+                      <div class="about-feat-icon">📎</div>
+                      <div class="about-feat-body">
+                        <div class="about-feat-title">附件多模态</div>
+                        <div class="about-feat-desc">图片 / PDF / Office 文档，AI 直接看懂内容</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -734,7 +757,7 @@ watch(() => route.fullPath, load);
                   <div class="about-info">
                     <div class="about-info-row">
                       <span class="about-info-label">版本</span>
-                      <span class="about-info-value">v0.1.0</span>
+                      <span class="about-info-value">v0.2.0</span>
                     </div>
                     <div class="about-info-row">
                       <span class="about-info-label">应用类型</span>
