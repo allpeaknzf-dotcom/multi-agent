@@ -187,7 +187,6 @@ async function downloadArtifact(art: any) {
 }
 
 async function viewArtifact(art: any) {
-  const fn = (art?.name || "").toLowerCase();
   const url = artifactMediaUrl(art);
   // PDF/Office/图片/视频：新窗口打开
   if (isPdfArtifact(art) || art.type === "image" || art.type === "video") {
