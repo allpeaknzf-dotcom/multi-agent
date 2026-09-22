@@ -187,13 +187,15 @@ async function downloadArtifact(art: any) {
 }
 
 async function viewArtifact(art: any) {
-  viewingArtifact.value = art;
-  // 图片/视频直接用下载地址内嵌预览，不抓文本
-  if (art.type === "image" || art.type === "video") {
-    artifactContent.value = "";
-    showArtifact.value = true;
+  const fn = (art?.name || "").toLowerCase();
+  const url = artifactMediaUrl(art);
+  // PDF/Office/图片/视频：新窗口打开
+  if (isPdfArtifact(art) || art.type === "image" || art.type === "video") {
+    window.open(url, "_blank");
     return;
   }
+  // 文本文件：弹窗内显示
+  viewingArtifact.value = art;
   try {
     const res = await api.fetchArtifact(art.id);
     if (!res.ok) {
@@ -208,13 +210,22 @@ async function viewArtifact(art: any) {
 }
 
 // 图片/视频产物的下载地址（同源直接内嵌）
+const OFFICE_PREVIEW_EXTS = new Set([".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".rtf"]);
+
 function artifactMediaUrl(art: any) {
-  return api.artifactDownloadUrl(art.id);
+  const url = api.artifactDownloadUrl(art.id);
+  const fn = (art?.name || "").toLowerCase();
+  // office 文件走 /preview（后端转 PDF）
+  if (OFFICE_PREVIEW_EXTS.has(fn.slice(fn.lastIndexOf("."))) && !fn.endsWith(".pdf")) {
+    return url.replace(/\/download$/, "/preview");
+  }
+  return url;
 }
-// 判断是否 PDF（按文件名后缀）
+// 判断是否 PDF/Office 可内嵌预览
 function isPdfArtifact(art: any) {
   if (!art?.name) return false;
-  return art.name.toLowerCase().endsWith(".pdf");
+  const fn = art.name.toLowerCase();
+  return OFFICE_PREVIEW_EXTS.has(fn.slice(fn.lastIndexOf(".")));
 }
 // 对话里的附件消息：点击预览（复用产物查看弹窗）
 const OFFICE_EXTS = new Set([".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".rtf", ".csv"]);
@@ -236,6 +247,9 @@ function previewAttachment(m: any) {
     type: m.meta.artifact_type,
   };
   if (m.meta.artifact_type === "image" || m.meta.artifact_type === "video") {
+    artifactContent.value = "";
+  } else if (OFFICE_PREVIEW_EXTS.has(fn.slice(fn.lastIndexOf(".")))) {
+    // PDF/Office 走 iframe，不读文本
     artifactContent.value = "";
   } else {
     api.fetchArtifact(m.meta.artifact_id).then(async (r) => {
@@ -487,6 +501,9 @@ const isHostMsg = (m: any) =>
   m.sender_type === "agent" &&
   session.value?.orchestrator_agent_id === m.sender_id;
 
+function parseAC(json: string) {
+  try { return JSON.parse(json) || []; } catch { return []; }
+}
 function taskStatusLabel(s: string) {
   const map: Record<string, string> = {
     pending: "待派发",
@@ -695,9 +712,17 @@ function taskStatusLabel(s: string) {
               <n-tag size="tiny" :type="t.status === 'done' ? 'success' : t.status === 'running' ? 'info' : t.status === 'revising' || t.status === 'paused' ? 'warning' : 'default'">
                 {{ taskStatusLabel(t.status) }}
               </n-tag>
-              <span v-if="t.round"> 第 {{ t.round }}/{{ t.max_rounds }} 轮</span>
+              <span v-if="t.assignee_name" class="task-assignee">👤 {{ t.assignee_name }}</span>
+              <span v-if="t.round">第 {{ t.round }}/{{ t.max_rounds }} 轮</span>
               <n-button v-if="t.status === 'running'" size="tiny" quaternary @click="pauseTask(t)">暂停</n-button>
               <n-button v-else-if="t.status === 'paused'" size="tiny" type="primary" ghost @click="resumeTask(t)">继续</n-button>
+            </div>
+            <!-- 验收标准预览 -->
+            <div v-if="t.acceptance_criteria" class="task-ac">
+              <div v-for="(ac, i) in parseAC(t.acceptance_criteria)" :key="i" class="task-ac-line">
+                <span :class="ac.level === 'P0' ? 'ac-p0' : 'ac-p1'">[{{ ac.level }}]</span>
+                {{ ac.text }}
+              </div>
             </div>
           </div>
         </div>
@@ -1122,6 +1147,12 @@ function taskStatusLabel(s: string) {
   font-size: 13px;
   margin-bottom: 4px;
 }
+
+.task-assignee { font-size: 11px; color: #888; }
+.task-ac { margin-top: 4px; padding: 4px 6px; background: rgba(0,0,0,0.03); border-radius: 4px; font-size: 11px; line-height: 1.5; }
+.task-ac-line { display: flex; gap: 4px; }
+.ac-p0 { color: #d4380d; font-weight: 600; }
+.ac-p1 { color: #d48806; }
 .task-meta {
   display: flex;
   align-items: center;

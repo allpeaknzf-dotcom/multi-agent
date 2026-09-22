@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { h, onMounted, ref } from "vue";
-import { NButton, useMessage } from "naive-ui";
+import { NButton, NTag, useMessage } from "naive-ui";
 import { api } from "../api/client";
 
 const message = useMessage();
@@ -54,6 +54,7 @@ function openEditKey(k: any) {
 }
 
 async function saveKey() {
+  saving.value = true;
   try {
     if (editingKeyId.value) {
       await api.updateKey(editingKeyId.value, {
@@ -72,17 +73,19 @@ async function saveKey() {
         api_key: keyForm.value.api_key,
         base_url: keyForm.value.base_url || undefined,
       });
-      message.success("Key 已保存（加密存储到系统钥匙串）");
+      message.success("Key 已保存");
     }
     showKeyModal.value = false;
     load();
   } catch (e: any) {
     message.error(e.message || "保存失败");
+  } finally {
+    saving.value = false;
   }
 }
 
 async function copyKey(k: any) {
-  // 复制一份一模一样的配置：名称加"（复制）"
+  saving.value = true;
   try {
     const { value } = await api.getKeyValue(k.id);
     if (!value) {
@@ -100,10 +103,13 @@ async function copyKey(k: any) {
     load();
   } catch (e: any) {
     message.error(e.message || "复制失败");
+  } finally {
+    saving.value = false;
   }
 }
 
 const testingKeyId = ref<number | null>(null);
+const saving = ref(false);
 async function testKey(k: any) {
   testingKeyId.value = k.id;
   try {
@@ -121,6 +127,7 @@ async function testKey(k: any) {
 }
 
 async function removeKey(k: any) {
+  if (!window.confirm(`确定删除 Key「${k.name}」吗？此操作不可恢复。`)) return;
   try {
     await api.deleteKey(k.id);
     message.success("Key 已删除");
@@ -148,7 +155,27 @@ onMounted(load);
     <n-data-table
       :columns="[
         { title: '名称', key: 'name' },
-        { title: 'Provider', key: 'provider', width: 140 },
+        { title: 'Provider', key: 'provider', width: 110 },
+        { title: '模型', key: 'model', width: 160, ellipsis: { tooltip: true } },
+        {
+          title: '能力', key: 'capability', width: 180,
+          render: (row: any) => {
+            const cap = row.capability || '';
+            if (!cap) return h('span', { style: 'color:#999;font-size:12px' }, '未探测');
+            const tags = cap.split('+').filter(Boolean);
+            const colorMap: Record<string, string> = {
+              '文本': 'default', '图片': 'success', '音频': 'info',
+              '视频': 'warning', '代码': 'info', '推理': 'error',
+              '多模态': 'success', '纯文本': 'default', '通用': 'warning',
+              '异常': 'error',
+            };
+            return h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap' },
+              tags.map((t: string) => h(NTag, {
+                size: 'small', type: (colorMap[t] as any) || 'default', bordered: false,
+              }, { default: () => t }))
+            );
+          },
+        },
         { title: '自定义地址', key: 'base_url', ellipsis: { tooltip: true } },
         {
           title: '操作', key: 'ops', width: 260,
@@ -166,7 +193,14 @@ onMounted(load);
     />
 
     <!-- Key 表单 -->
-    <n-modal v-model:show="showKeyModal" preset="card" :title="editingKeyId ? '编辑 API Key' : '新增 API Key'" style="width: 560px">
+    <Teleport to="body">
+  <div v-if="saving" style="position:fixed;inset:0;background:rgba(255,255,255,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px">
+    <div style="width:32px;height:32px;border:3px solid #ccc;border-top-color:#18a058;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+    <div style="font-size:14px;color:#666">正在保存并探测模型能力...</div>
+  </div>
+</Teleport>
+
+<n-modal v-model:show="showKeyModal" preset="card" :title="editingKeyId ? '编辑 API Key' : '新增 API Key'" style="width: 560px">
       <n-form label-placement="top">
         <n-form-item label="名称">
           <n-input v-model:value="keyForm.name" placeholder="例如：我的 DeepSeek 网关" />
@@ -190,6 +224,11 @@ onMounted(load);
           <n-button type="primary" @click="saveKey">保存</n-button>
         </n-space>
       </template>
+
     </n-modal>
   </div>
 </template>
+
+<style scoped>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>

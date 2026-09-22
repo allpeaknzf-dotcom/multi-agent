@@ -200,8 +200,61 @@ def update_project_memory(
 # ============================================================
 # Keys
 # ============================================================
+async def _auto_detect_capability(k: models.KeyEntry) -> str | None:
+    """新增/编辑后自动探测模型能力。"""
+    import httpx as _httpx
+    import base64 as _b64
+    if not k.model:
+        return None
+    api_key = keyring_store.get_key(k.key_ref) or ""
+    base_url = k.base_url
+    if k.provider == "openrouter":
+        base_url = base_url or "https://openrouter.ai/api/v1"
+    elif k.provider == "ollama":
+        base_url = base_url or "http://127.0.0.1:11434/v1"
+    if not base_url:
+        return None
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    caps = {"文本"}
+    statuses = []
+    try:
+        async with _httpx.AsyncClient(timeout=20) as client:
+            async def _test(blocks):
+                try:
+                    r = await client.post(
+                        base_url.rstrip("/") + "/chat/completions",
+                        headers={**headers, "Content-Type": "application/json"},
+                        json={"model": k.model, "messages": [{"role": "user", "content": blocks}], "max_tokens": 5},
+                    )
+                    return r.status_code
+                except Exception:
+                    return -1
+            tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+            s1 = await _test([{"type": "text", "text": "hi"}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{tiny_png}"}}])
+            statuses.append(s1)
+            if s1 == 200:
+                caps.add("图片")
+            s2 = await _test([{"type": "text", "text": "hi"}, {"type": "input_audio", "input_audio": {"data": "UklRQgAAAAAAAAAAPmRhdGEAAAAAAAAAAAAA", "format": "wav"}}])
+            statuses.append(s2)
+            if s2 == 200:
+                caps.add("音频")
+            s3 = await _test([{"type": "text", "text": "hi"}, {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAAHGZ0eXBpc292MQAAAGlzb21pc28xMjAxAAAA"}}])
+            statuses.append(s3)
+            if s3 == 200:
+                caps.add("视频")
+        # 如果所有请求都失败（非200且非400不支持媒体），说明Key/模型异常
+        all_fail = all(s in (-1, 401, 403, 404) for s in statuses if s is not None)
+        if all_fail and not any(s == 200 for s in statuses):
+            return "异常"
+        if "图片" in caps or "音频" in caps or "视频" in caps:
+            return "+".join(sorted(caps))
+        return "文本"
+    except Exception:
+        return "异常"
+
+
 @router.post("/api/keys", response_model=schemas.KeyOut)
-def create_key(body: schemas.KeyCreate, db: DbSession = Depends(get_session)):
+async def create_key(body: schemas.KeyCreate, db: DbSession = Depends(get_session)):
     key_ref = f"{body.provider}:{uuid.uuid4().hex[:12]}"
     keyring_store.save_key(key_ref, body.api_key)
     k = models.KeyEntry(
@@ -214,16 +267,302 @@ def create_key(body: schemas.KeyCreate, db: DbSession = Depends(get_session)):
     db.add(k)
     db.commit()
     db.refresh(k)
+    # 自动探测能力
+    cap = await _auto_detect_capability(k)
+    if cap:
+        k.capability = cap
+        db.commit()
+        db.refresh(k)
     return k
+
+
+def _detect_capability(provider: str, model: str | None) -> str:
+    """根据 provider+model 粗判模型能力。"""
+    if not model:
+        return "未指定"
+    m = model.lower()
+
+    # 1) 明确的代码模型
+    if any(k in m for k in ["coder", "code-", "-code", "starcoder", "deepseek-code"]):
+        return "代码"
+
+    # 2) 明确的多模态（视觉/VL）
+    vision_kw = [
+        "vision", "-vl", "vl-", "vl ", "qwen-vl", "glm-4v", "internvl", "step-1v",
+        "4o", "4-turbo", "gpt-4.1", "gpt-4o", "gpt-5",
+        "claude-3", "claude-4",
+        "gemini", "o1", "o3", "o4",
+        "doubao-1-5", "doubao-vision", "doubao-seed",
+        "deepseek-vl",
+    ]
+    if any(k in m for k in vision_kw):
+        return "多模态"
+
+    # 3) deepseek 系列细分
+    if "deepseek" in m:
+        if "vl" in m:
+            return "多模态"
+        if "reasoner" in m or "r1" in m:
+            return "推理"
+        if "coder" in m:
+            return "代码"
+        return "纯文本"
+
+    # 4) qwen 系列细分
+    if "qwen" in m:
+        if "vl" in m:
+            return "多模态"
+        return "纯文本"
+
+    # 5) glm 系列细分
+    if "glm" in m:
+        if "4v" in m or "-v" in m:
+            return "多模态"
+        return "纯文本"
+
+    # 6) 纯文本经典模型
+    text_kw = ["gpt-3.5", "text-", "-text", "llama", "mistral", "yi-",
+               "phi-", "gemma", "command"]
+    if any(k in m for k in text_kw):
+        return "纯文本"
+
+    return "通用"
 
 
 @router.get("/api/keys", response_model=list[schemas.KeyOut])
 def list_keys(db: DbSession = Depends(get_session)):
-    return db.query(models.KeyEntry).order_by(models.KeyEntry.id.desc()).all()
+    rows = db.query(models.KeyEntry).order_by(models.KeyEntry.id.desc()).all()
+    result = []
+    for k in rows:
+        d = schemas.KeyOut.model_validate(k).model_dump()
+        # 优先用探测后存的 capability，没探测过用规则判断
+        d["capability"] = k.capability or _detect_capability(k.provider, k.model)
+        result.append(schemas.KeyOut(**d))
+    return result
+
+
+# 已知模型能力表（来自各厂商官方文档）
+KNOWN_MODEL_CAPABILITIES: dict[str, str] = {
+    # OpenAI
+    "gpt-4o": "多模态", "gpt-4o-mini": "多模态", "gpt-4o-2024-05-13": "多模态",
+    "gpt-4-turbo": "多模态", "gpt-4-turbo-preview": "多模态",
+    "gpt-4.1": "多模态", "gpt-4.1-mini": "多模态", "gpt-4.1-nano": "多模态",
+    "gpt-5": "多模态", "gpt-5-mini": "多模态", "gpt-5-nano": "多模态",
+    "o1": "推理", "o1-mini": "推理", "o1-preview": "推理",
+    "o3": "推理", "o3-mini": "推理", "o4-mini": "推理",
+    "gpt-3.5-turbo": "纯文本", "gpt-3.5-turbo-16k": "纯文本",
+    # Anthropic
+    "claude-3-opus-20240229": "多模态", "claude-3-sonnet-20240229": "多模态",
+    "claude-3-haiku-20240307": "多模态",
+    "claude-3-5-sonnet-20241022": "多模态", "claude-3-5-sonnet-20240620": "多模态",
+    "claude-3-5-haiku-20241022": "多模态",
+    "claude-3-7-sonnet-20250219": "多模态",
+    "claude-sonnet-4-20250514": "多模态", "claude-opus-4-20250514": "多模态",
+    # 火山方舟/豆包
+    "doubao-1-5-pro-32k-250115": "多模态", "doubao-1-5-pro-256k-250115": "多模态",
+    "doubao-1-5-lite-32k-250115": "多模态", "doubao-1-5-lite-4k-250115": "多模态",
+    "doubao-pro-32k": "多模态", "doubao-pro-128k": "多模态",
+    "doubao-vision-pro": "多模态", "doubao-vision-lite": "多模态",
+    # DeepSeek
+    "deepseek-chat": "纯文本", "deepseek-reasoner": "推理",
+    "deepseek-coder": "代码",
+    # 通义千问
+    "qwen-max": "纯文本", "qwen-max-0919": "纯文本",
+    "qwen-plus": "纯文本", "qwen-turbo": "纯文本",
+    "qwen-vl-max": "多模态", "qwen-vl-plus": "多模态",
+    "qwen2.5-72b-instruct": "纯文本",
+    # 智谱
+    "glm-4-plus": "纯文本", "glm-4": "纯文本", "glm-4-air": "纯文本",
+    "glm-4v": "多模态", "glm-4v-plus": "多模态",
+}
+
+
+@router.post("/api/keys/{key_id}/probe")
+async def probe_key(key_id: int, db: DbSession = Depends(get_session)):
+    """调 GET {base_url}/models 查询该 Key 可用模型，并识别能力。"""
+    import httpx
+    k = db.get(models.KeyEntry, key_id)
+    if not k:
+        raise HTTPException(404, "Key 不存在")
+
+    api_key = keyring_store.get_key(k.key_ref) or ""
+    base_url = k.base_url
+    if k.provider == "openrouter":
+        base_url = base_url or "https://openrouter.ai/api/v1"
+    elif k.provider == "ollama":
+        base_url = base_url or "http://127.0.0.1:11434/v1"
+
+    if not base_url:
+        raise HTTPException(400, "该 provider 需配置自定义 base_url")
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    url = base_url.rstrip("/") + "/models"
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        raise HTTPException(502, f"查询失败: {e}")
+
+    def _modality_to_cap(modality: str) -> str | None:
+        """把 API 返回的 modality 字符串转成我们的能力标签。"""
+        if not modality:
+            return None
+        m = modality.lower()
+        if "image" in m or "vision" in m or "audio" in m or "video" in m:
+            return "多模态"
+        if "text" in m and "->text" in m:
+            return "纯文本"
+        return None
+
+    # 解析模型列表
+    models_list = []
+    if isinstance(data, dict) and "data" in data:
+        items = data["data"]
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+
+    for m in items:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("id") or m.get("name") or ""
+        # 1) 优先用 API 返回的 modality 字段（OpenRouter 等）
+        modality = None
+        arch = m.get("architecture") or {}
+        if isinstance(arch, dict):
+            modality = arch.get("modality") or arch.get("input_modalities")
+        if not modality:
+            modality = m.get("modality") or m.get("input_modalities")
+        if isinstance(modality, list):
+            modality = "+".join(modality)
+        cap = _modality_to_cap(modality)
+        # 2) 用网关返回的 model_type / description 判断
+        if not cap:
+            ml = mid.lower()
+            model_type = (m.get("model_type") or "").lower()
+            desc = (m.get("description") or "").lower()
+            # 多模态优先（id 或 description 明确提到视觉/图片）
+            if any(k in ml for k in ["vision", "vl", "4o", "4-turbo", "claude-3", "claude-4", "claude-opus", "claude-sonnet", "gemini", "gpt-5", "gpt-4.1", "glm-4v", "internvl", "step-1v"]):
+                cap = "多模态"
+            elif any(k in desc for k in ["vision", "image input", "multimodal", "visual understanding", "图片", "视觉"]):
+                cap = "多模态"
+            # 代码：id 明确含 coder/code，或 model_type 是 code
+            elif "coder" in ml or ml.endswith("-code") or model_type == "code":
+                cap = "代码"
+            # 推理
+            elif "reasoner" in ml or "r1" in ml or "o1" in ml or "o3" in ml or "thinking" in desc:
+                cap = "推理"
+            # 默认纯文本
+            elif "llm" in model_type or model_type == "":
+                cap = "纯文本"
+        # 3) 查已知表
+        if not cap:
+            cap = KNOWN_MODEL_CAPABILITIES.get(mid)
+        # 4) 关键词兜底
+        if not cap:
+            cap = _detect_capability(k.provider, mid)
+        models_list.append({"id": mid, "capability": cap})
+
+    # 对当前默认模型，确定最终能力
+    current_cap = None
+    if k.model:
+        current_cap = KNOWN_MODEL_CAPABILITIES.get(k.model)
+        if not current_cap:
+            for m in models_list:
+                if m["id"] == k.model:
+                    current_cap = m["capability"]
+                    break
+        if not current_cap:
+            current_cap = _detect_capability(k.provider, k.model)
+
+        # 真实探测：分别测试图片/音频/视频支持
+        caps = set(["文本"])  # 文本默认支持
+        try:
+            import base64
+            vision_url = base_url.rstrip("/") + "/chat/completions"
+
+            async def _test(content_blocks):
+                try:
+                    async with httpx.AsyncClient(timeout=20) as client:
+                        resp = await client.post(
+                            vision_url,
+                            headers={**headers, "Content-Type": "application/json"},
+                            json={
+                                "model": k.model,
+                                "messages": [{"role": "user", "content": content_blocks}],
+                                "max_tokens": 5,
+                            },
+                        )
+                        return resp.status_code, resp.text.lower()
+                except Exception:
+                    return None, ""
+
+            # 1x1 PNG
+            tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+            sc, etext = await _test([
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{tiny_png}"}},
+            ])
+            if sc == 200:
+                caps.add("图片")
+            elif sc and any(k in etext for k in ["image", "vision", "图片"]):
+                pass  # 不支持图片
+
+            # 1 秒极小 WAV（16字节静音头 + 0 数据）
+            # 用 data:audio/wav;base64 测试
+            tiny_wav = "UklRQgAAAAAAAAAAPmRhdGEAAAAAAAAAAAAA"
+            sc2, etext2 = await _test([
+                {"type": "text", "text": "hi"},
+                {"type": "input_audio", "input_audio": {"data": tiny_wav, "format": "wav"}},
+            ])
+            if sc2 == 200:
+                caps.add("音频")
+
+            # 视频：用 data:video/mp4 测试（极小字节）
+            tiny_mp4 = "AAAAHGZ0eXBpc292MQAAAGlzb21pc28xMjAxAAAA"
+            sc3, etext3 = await _test([
+                {"type": "text", "text": "hi"},
+                {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{tiny_mp4}"}},
+            ])
+            if sc3 == 200:
+                caps.add("视频")
+
+            # 探测成功（至少图片或音频或视频有一个 200），用探测结果
+            if "图片" in caps or "音频" in caps or "视频" in caps:
+                current_cap = "+".join(sorted(caps))
+        except Exception:
+            pass  # 探测失败保持原判断
+
+    # 存库
+    if current_cap:
+        k.capability = current_cap
+        db.commit()
+
+    return {
+        "key_id": key_id,
+        "default_model": k.model,
+        "default_capability": current_cap,
+        "models": models_list,
+        "total": len(models_list),
+    }
+
+
+@router.put("/api/keys/{key_id}/capability")
+def update_key_capability(key_id: int, body: dict, db: DbSession = Depends(get_session)):
+    k = db.get(models.KeyEntry, key_id)
+    if not k:
+        raise HTTPException(404, "Key 不存在")
+    k.capability = body.get("capability")
+    db.commit()
+    return {"ok": True, "capability": k.capability}
 
 
 @router.put("/api/keys/{key_id}", response_model=schemas.KeyOut)
-def update_key(
+async def update_key(
     key_id: int,
     body: schemas.KeyUpdate,
     db: DbSession = Depends(get_session),
@@ -244,6 +583,13 @@ def update_key(
         keyring_store.save_key(k.key_ref, body.api_key)
     db.commit()
     db.refresh(k)
+    # 模型或 Key 变了，重新自动探测
+    if body.model or body.api_key or body.base_url:
+        cap = await _auto_detect_capability(k)
+        if cap:
+            k.capability = cap
+            db.commit()
+            db.refresh(k)
     return k
 
 
@@ -383,11 +729,14 @@ async def create_session(
     db.refresh(s)
 
     manager = ChatManager(db)
-    for agent_id in body.agent_ids:
+    # 成员列表 + 主理人（主理人如果没选进成员，自动加上）
+    invite_ids = list(body.agent_ids)
+    if body.orchestrator_agent_id and body.orchestrator_agent_id not in invite_ids:
+        invite_ids.append(body.orchestrator_agent_id)
+    for agent_id in invite_ids:
         if db.get(models.Agent, agent_id):
             await manager.invite_agent(s.id, agent_id)
     if body.orchestrator_agent_id:
-        # 已存在则设为主理人
         s.orchestrator_agent_id = body.orchestrator_agent_id
         db.commit()
         db.refresh(s)
@@ -519,12 +868,15 @@ def session_messages(session_id: int, db: DbSession = Depends(get_session)):
 
 @router.get("/api/sessions/{session_id}/tasks", response_model=list[schemas.TaskOut])
 def session_tasks(session_id: int, db: DbSession = Depends(get_session)):
-    return (
-        db.query(models.Task)
-        .filter_by(session_id=session_id)
-        .order_by(models.Task.id)
-        .all()
-    )
+    tasks = db.query(models.Task).filter_by(session_id=session_id).order_by(models.Task.id).all()
+    result = []
+    for t in tasks:
+        d = schemas.TaskOut.model_validate(t).model_dump()
+        if t.assignee_agent_id:
+            agent = db.get(models.Agent, t.assignee_agent_id)
+            d["assignee_name"] = agent.name if agent else None
+        result.append(schemas.TaskOut(**d))
+    return result
 
 
 # ============================================================

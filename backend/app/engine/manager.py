@@ -509,6 +509,8 @@ class ChatManager:
             if not session or not assignee:
                 return (plan["title"], "", TASK_DONE)
 
+            # 把验收标准存到 task（JSON）
+            ac_json = json.dumps(plan.get("acceptance_criteria", []), ensure_ascii=False)
             task = Task(
                 session_id=session.id,
                 title=plan["title"],
@@ -517,7 +519,8 @@ class ChatManager:
                 parent_task_id=root.id,
                 status=TASK_RUNNING,
                 round=0,
-                max_rounds=3,
+                max_rounds=5,
+                acceptance_criteria=ac_json,
             )
             db.add(task)
             db.commit()
@@ -539,8 +542,19 @@ class ChatManager:
                     break
                 task.round = rnd
                 db.commit()
+                # 派活上下文：四要素 + 验收标准
+                task_brief = ""
                 try:
-                    content = await mgr._ask_agent(session, assignee, "", task=task)
+                    acs = json.loads(task.acceptance_criteria or "[]")
+                    if acs:
+                        ac_lines = [f"  [{a.get('level','?')}] {a.get('id','')}: {a.get('text','')}" for a in acs]
+                        task_brief = "\n\n【验收标准（必须全部满足）】\n" + "\n".join(ac_lines)
+                except Exception:
+                    pass
+                if rnd > 1:
+                    task_brief += "\n\n【返工要求】上一轮未通过，请针对不合格项修改。"
+                try:
+                    content = await mgr._ask_agent(session, assignee, task_brief, task=task)
                 except ProviderError as exc:
                     mgr._save_and_push(
                         session,
@@ -551,6 +565,19 @@ class ChatManager:
                         msg_type=MSG_SYSTEM,
                     )
                     break
+
+                # 空产出硬拦截：空内容/只有结论/无实际交付物 → 直接返工，不进评审
+                if not content or not content.strip() or len(content.strip()) < 20:
+                    await mgr._status(
+                        session,
+                        f"子任务「{task.title}」第 {rnd} 轮产出为空或过短，直接退回要求提交实际交付物。",
+                    )
+                    task.status = TASK_REVISING
+                    db.commit()
+                    await mgr._push_task(session.id, task) if hasattr(mgr, '_push_task') else None
+                    if rnd >= task.max_rounds:
+                        break
+                    continue
 
                 # 产出入库（代码或文本）
                 msg_type = MSG_CODE if mgr._looks_like_code(content) else MSG_TEXT
@@ -1241,6 +1268,8 @@ class ChatManager:
             self.db.commit()
             self.db.refresh(msg)
             self.db.refresh(art)
+            # 实时推送给前端
+            self._push_message(msg)
         return art
 
     def _scan_workdir_artifacts(
@@ -1355,8 +1384,10 @@ class ChatManager:
                 self.db.commit()
             return exists
 
+        # 主理人 role 标 host；第一个加入且未指定主理人时也自动设为主理人
+        is_host = (agent_id == session.orchestrator_agent_id) or (not session.orchestrator_agent_id)
         member = SessionMember(
-            session_id=session_id, agent_id=agent_id, role=ROLE_HOST if not session.orchestrator_agent_id else "member"
+            session_id=session_id, agent_id=agent_id, role=ROLE_HOST if is_host else "member"
         )
         self.db.add(member)
         self.db.commit()

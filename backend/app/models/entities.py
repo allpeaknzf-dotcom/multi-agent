@@ -50,6 +50,7 @@ class KeyEntry(Base):
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)  # 该 Key 的默认模型
     key_ref: Mapped[str] = mapped_column(String(120), nullable=False)
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    capability: Mapped[str | None] = mapped_column(String(40), nullable=True)  # 探测后的能力
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
@@ -182,6 +183,8 @@ class Task(Base):
     round: Mapped[int] = mapped_column(Integer, default=0)
     max_rounds: Mapped[int] = mapped_column(Integer, default=3)
     folder: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: [{id, level, text}]
+    rework_log: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: [{round, ac, issue, fix, priority}]
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 

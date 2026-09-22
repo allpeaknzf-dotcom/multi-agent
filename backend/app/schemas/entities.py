@@ -56,6 +56,7 @@ class KeyOut(ORMBase):
     model: str | None
     key_ref: str
     base_url: str | None
+    capability: str | None = None  # 多模态 / 纯文本 / 代码 / 推理
     created_at: datetime
 
 
@@ -184,6 +185,9 @@ class TaskOut(ORMBase):
     round: int
     max_rounds: int
     folder: str | None
+    acceptance_criteria: str | None = None
+    rework_log: str | None = None
+    assignee_name: str | None = None
     created_at: datetime
     updated_at: datetime
 

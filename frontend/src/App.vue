@@ -301,7 +301,7 @@ watch(() => route.fullPath, load);
         <div class="shell">
           <aside class="sidebar">
             <div class="sb-brand">
-              <AppLogo :size="22" />
+              <AppLogo :size="26" />
               <span>Multi-agent</span>
             </div>
 
@@ -347,7 +347,7 @@ watch(() => route.fullPath, load);
                       @dragover.prevent
                       @drop.prevent="onDropToProject(p)"
                     >
-                      <span class="sb-item-icon">🗂</span>
+                      <span class="sb-item-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
                       <span class="sb-item-label">{{ p.name }}</span>
                       <span class="sb-item-more" @click.stop>
                         <n-dropdown
@@ -381,7 +381,7 @@ watch(() => route.fullPath, load);
                       @click="router.push(sessionPath(s))"
                       @dragstart="onDragStart(s)"
                     >
-                      <span class="sb-item-icon">💬</span>
+                      <span class="sb-item-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
                       <span class="sb-item-label">{{ s.title }}</span>
                       <span class="sb-item-more" @click.stop>
                         <n-dropdown
@@ -402,7 +402,7 @@ watch(() => route.fullPath, load);
 
             <div class="sb-footer">
               <div class="sb-item" @click="showSettings = true">
-                <span class="sb-item-icon">⚙️</span>
+                <span class="sb-item-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
                 <span class="sb-item-label">设置</span>
               </div>
             </div>
@@ -441,7 +441,7 @@ watch(() => route.fullPath, load);
                   <div v-if="archivedProjects.length === 0" class="settings-empty">暂无已归档项目</div>
                   <div v-for="p in archivedProjects" :key="p.id" class="settings-row">
                     <div class="settings-row-text">
-                      <div class="settings-row-label">🗂 {{ p.name }}</div>
+                      <div class="settings-row-label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>{{ p.name }}</div>
                       <div class="settings-row-desc">归档于 {{ new Date(p.created_at).toLocaleString() }}</div>
                     </div>
                     <div class="settings-row-actions">
@@ -455,7 +455,7 @@ watch(() => route.fullPath, load);
                   <div v-if="archivedRecent.length === 0" class="settings-empty">暂无已归档对话</div>
                   <div v-for="s in archivedRecent" :key="s.id" class="settings-row">
                     <div class="settings-row-text">
-                      <div class="settings-row-label">💬 {{ s.title }}<span v-if="s.project_id != null" class="settings-row-project"> · {{ projectName(s.project_id) }}</span></div>
+                      <div class="settings-row-label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>{{ s.title }}<span v-if="s.project_id != null" class="settings-row-project"> · {{ projectName(s.project_id) }}</span></div>
                       <div class="settings-row-desc">归档于 {{ new Date(s.created_at).toLocaleString() }}</div>
                     </div>
                     <div class="settings-row-actions">
@@ -473,9 +473,12 @@ watch(() => route.fullPath, load);
                   <div class="about-hero-blob about-hero-blob-a"></div>
                   <div class="about-hero-blob about-hero-blob-b"></div>
                   <div class="about-logo">
-                    <AppLogo :size="72" />
+                    <AppLogo :size="84" />
                   </div>
-                  <div class="about-name">Multi-agent · 多 Agent 协作客户端</div>
+                  <div class="about-name">Multi-agent · 多 Agent 协作</div>
+                  <div class="about-ver">
+                    <span class="about-ver-badge">v0.2.0</span>
+                  </div>
                   <p class="about-desc">
                     让多个不同 AI Agent 在同一个「群聊」里协作完成任务，指定一个主理人前台收口：
                     简单问题直接答，复杂任务自动拆解派活、验收汇总后告诉你。支持上传图片 / PDF / Office 文档，AI 直接看懂内容。
@@ -518,90 +521,6 @@ watch(() => route.fullPath, load);
                 </div>
 
                 <!-- 核心功能 -->
-                <div class="about-section">
-                  <div class="about-section-title">核心功能</div>
-                  <div class="about-feats">
-                    <div class="about-feat">
-                      <div class="about-feat-icon">💬</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">群聊式协作</div>
-                        <div class="about-feat-desc">多 Agent 群聊，随时拉人进群；输入框内输入 @Agent名 可定向指定发言。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">🎯</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">主理人调度</div>
-                        <div class="about-feat-desc">任务自动「拆解 → 派活 → 并行/串行执行 → 验收（可多轮重做）→ 汇总」。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">🗂</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">项目隔离</div>
-                        <div class="about-feat-desc">每个项目独立记忆、互不串扰；项目内可建多个会话。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">🧠</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">项目记忆</div>
-                        <div class="about-feat-desc">派活结论自动沉淀到项目记忆，Agent 对话自动参考历史结论，可手动编辑。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">📦</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">产物导出</div>
-                        <div class="about-feat-desc">沙箱运行自动沉淀「源代码 / 运行输出 / 图片文档」，右侧面板查看、下载。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">🔌</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">多模型接入</div>
-                        <div class="about-feat-desc">OpenAI / Anthropic / 火山方舟 / OpenRouter / Ollama（预留），Key 加密存系统钥匙串。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">🧩</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">自定义 Agent</div>
-                        <div class="about-feat-desc">任意定义人设 + 模型 + Key，支持从内置岗位模板一键导入。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">📚</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">岗位模板</div>
-                        <div class="about-feat-desc">内置多种 Agent 岗位模板，一键导入快速生成专属 Agent。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">♻️</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">归档恢复</div>
-                        <div class="about-feat-desc">项目与会话支持归档 / 恢复 / 删除，随时保持列表整洁。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">🛡</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">代码沙箱验证</div>
-                        <div class="about-feat-desc">产物代码在隔离环境运行（L1 本地受限进程 / L2 Docker），结果回喂 Agent 自我修正。</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">📎</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">附件多模态</div>
-                        <div class="about-feat-desc">上传图片 / PDF / Office 文档，AI 直接看懂内容。</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- 使用技巧 -->
                 <div class="about-section">
                   <div class="about-section-title">使用技巧</div>
                   <div class="help-tips">
@@ -690,8 +609,8 @@ watch(() => route.fullPath, load);
                     <span class="about-ver-badge">v0.2.0</span>
                   </div>
                   <p class="about-desc">
-                    让多个不同 AI Agent 在同一个「群聊」里共同辩论、分工、完成任务，
-                    可选一个 Agent 担任主理人，负责任务拆解、派活与验收，产出方案 / 代码 / 文档 / 图片。
+                    让多个不同 AI Agent 在同一个「群聊」里协作完成任务，指定一个主理人前台收口：
+                    简单问题直接答，复杂任务自动拆解派活、验收汇总后告诉你。支持上传图片 / PDF / Office 文档，AI 直接看懂内容。
                   </p>
                 </div>
 
@@ -700,52 +619,57 @@ watch(() => route.fullPath, load);
                   <div class="about-section-title">核心能力</div>
                   <div class="about-feats">
                     <div class="about-feat">
-                      <div class="about-feat-icon">💬</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">群聊式协作</div>
-                        <div class="about-feat-desc">多 Agent 群聊，随时拉人进群，@ 定向发言</div>
+                      <div class="about-feat-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
                       </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">🎯</div>
                       <div class="about-feat-body">
                         <div class="about-feat-title">主理人调度</div>
                         <div class="about-feat-desc">任务拆解 → 派活 → 执行 → 验收 → 汇总</div>
                       </div>
                     </div>
                     <div class="about-feat">
-                      <div class="about-feat-icon">📦</div>
+                      <div class="about-feat-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                      </div>
                       <div class="about-feat-body">
-                        <div class="about-feat-title">产物导出</div>
-                        <div class="about-feat-desc">沙箱运行沉淀源代码 / 输出 / 图片文档</div>
+                        <div class="about-feat-title">多角色协作</div>
+                        <div class="about-feat-desc">22 个内置行业顶级岗位，随时拉人进群</div>
                       </div>
                     </div>
                     <div class="about-feat">
-                      <div class="about-feat-icon">🔌</div>
+                      <div class="about-feat-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                      </div>
+                      <div class="about-feat-body">
+                        <div class="about-feat-title">附件多模态</div>
+                        <div class="about-feat-desc">图片 / PDF / Office 文档，AI 直接看懂内容</div>
+                      </div>
+                    </div>
+                    <div class="about-feat">
+                      <div class="about-feat-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                      </div>
                       <div class="about-feat-body">
                         <div class="about-feat-title">多模型接入</div>
                         <div class="about-feat-desc">OpenAI / Anthropic / 火山方舟 / OpenRouter</div>
                       </div>
                     </div>
                     <div class="about-feat">
-                      <div class="about-feat-icon">🧩</div>
+                      <div class="about-feat-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                      </div>
                       <div class="about-feat-body">
-                        <div class="about-feat-title">自定义 Agent</div>
-                        <div class="about-feat-desc">人设 + 模型 + Key，内置模板一键导入</div>
+                        <div class="about-feat-title">产物归档</div>
+                        <div class="about-feat-desc">沙箱运行沉淀源代码 / 输出 / 图片文档</div>
                       </div>
                     </div>
                     <div class="about-feat">
-                      <div class="about-feat-icon">🧠</div>
+                      <div class="about-feat-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.5-3 5.6V17a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2.4c-1.7-1.1-3-3.1-3-5.6a7 7 0 0 1 7-7z"/><line x1="9" y1="22" x2="15" y2="22"/></svg>
+                      </div>
                       <div class="about-feat-body">
                         <div class="about-feat-title">项目记忆</div>
                         <div class="about-feat-desc">关键结论自动沉淀，对话自动参考</div>
-                      </div>
-                    </div>
-                    <div class="about-feat">
-                      <div class="about-feat-icon">📎</div>
-                      <div class="about-feat-body">
-                        <div class="about-feat-title">附件多模态</div>
-                        <div class="about-feat-desc">图片 / PDF / Office 文档，AI 直接看懂内容</div>
                       </div>
                     </div>
                   </div>
@@ -897,7 +821,7 @@ watch(() => route.fullPath, load);
   align-items: center;
   gap: 8px;
   padding: 18px 16px 12px;
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.5px;
 }
@@ -1032,6 +956,9 @@ watch(() => route.fullPath, load);
 }
 .sb-item-icon {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 13px;
 }
 .sb-item-label {
@@ -1296,15 +1223,15 @@ watch(() => route.fullPath, load);
 }
 .about-feat-icon {
   flex-shrink: 0;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 17px;
-  background: linear-gradient(135deg, #eef0ff, #f6f2ff);
-  border: 1px solid #e6e4ff;
+  color: #6366f1;
+  background: #f5f5ff;
+  border: 1px solid #e8e8ff;
 }
 .about-feat-title {
   font-size: 13.5px;

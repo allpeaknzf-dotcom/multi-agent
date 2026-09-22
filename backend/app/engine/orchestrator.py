@@ -51,19 +51,28 @@ _PLAN_SYSTEM = (
     "在开始前，你会收到一份【团队成员能力清单】和【成员能力自述】，"
     "请认真阅读每个人擅长的领域，据此把用户任务拆解为 1~5 个清晰、可并行或串行执行的子任务，"
     "**每个子任务必须指派给清单中实际存在、且能力最匹配该子任务的成员**（用其名称 assignee 指定）。"
-    "不要把所有任务都派给主理人自己——优先让最擅长的成员去执行。"
+    "不要把所有任务都派给主理人自己——优先让最擅长的成员去执行。\n\n"
+    "**每个子任务必须包含四要素 + 验收标准**：\n"
+    "- deliverable：交付物是什么（如'可复制到 Excel 的测试用例表'）\n"
+    "- coverage：覆盖范围（必须覆盖哪些场景/模块）\n"
+    "- acceptance_criteria：验收标准数组，每条含 id/level/text。level 取 P0（必须全过）/P1（建议过）\n"
+    "  至少 2 条 P0 标准，可检查、可量化，不要模糊表述\n"
+    "- 未明确的规则不要卡住，标注'待确认'即可\n\n"
     "你的回复分为两段：\n"
     "第一段【分工说明】：用 2~4 句话简述你把任务切成哪几块、分别派给谁、依据是什么；\n"
-    "第二段【子任务】：只输出 JSON 数组，不要其他内容，格式："
-    '[{"title": "子任务标题", "description": "详细要求", "assignee": "成员Agent名"}]'
+    "第二段【子任务】：只输出 JSON 数组，不要其他内容，格式：\n"
+    '[{"title":"子任务","description":"要求","assignee":"成员名",'
+    '"deliverable":"交付物","coverage":"覆盖范围",'
+    '"acceptance_criteria":[{"id":"AC1","level":"P0","text":"标准内容"}]}]'
 )
 
 _REVIEW_SYSTEM = (
-    "你是本会话的主理人，正在验收成员 Agent 的任务产出。"
-    "请判断产出是否达到任务要求。若达标，只输出 JSON："
-    '{"pass": true, "comment": "通过意见"}'
-    "若不达标，只输出 JSON："
-    '{"pass": false, "comment": "具体问题与修改意见"}'
+    "你是本会话的主理人，正在验收成员 Agent 的任务产出。\n"
+    "请对照验收标准逐条检查，**P0 标准必须全部满足**才算通过。\n"
+    "若全部 P0 标准通过，输出 JSON：\n"
+    '{"pass": true, "comment": "通过意见", "p0_passed": ["AC1","AC2"]}\n'
+    "若有 P0 未过，输出 JSON：\n"
+    '{"pass": false, "comment": "未通过", "rework": [{"ac":"AC1","issue":"哪条没达","fix":"怎么改","priority":"P0"}]}\n'
     "不要输出其他内容。"
 )
 
@@ -331,8 +340,18 @@ class OrchestratorService:
         run_output: str | None = None,
         peer_comment: str | None = None,
     ) -> tuple[bool, str]:
+        # 从 task 读验收标准（JSON）
+        ac_block = ""
+        try:
+            import json as _json
+            acs = _json.loads(task.acceptance_criteria) if task.acceptance_criteria else []
+            if acs:
+                ac_lines = [f"  [{a.get('level','?')}] {a.get('id','')}: {a.get('text','')}" for a in acs]
+                ac_block = "\n验收标准：\n" + "\n".join(ac_lines)
+        except Exception:
+            pass
         prompt = (
-            f"子任务：{task.title}\n要求：{task.description}\n\n"
+            f"子任务：{task.title}\n要求：{task.description}{ac_block}\n\n"
             f"成员产出：\n{result_content[:6000]}"
         )
         if peer_comment:

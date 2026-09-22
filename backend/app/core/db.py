@@ -102,6 +102,11 @@ def _migrate() -> None:
                 conn.execute(
                     text("ALTER TABLE key_entries ADD COLUMN model VARCHAR(120)")
                 )
+        if "capability" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE key_entries ADD COLUMN capability VARCHAR(40)")
+                )
     if "artifacts" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("artifacts")}
         if "folder" not in cols:
@@ -128,9 +133,10 @@ def _seed_templates() -> None:
     from ..models.entities import AgentTemplate
 
     with SessionLocal() as db:
-        if db.query(AgentTemplate).count() > 0:
-            return
+        existing = {t.name for t in db.query(AgentTemplate).all()}
         for t in AGENT_TEMPLATES:
+            if t["name"] in existing:
+                continue
             db.add(
                 AgentTemplate(
                     name=t["name"],

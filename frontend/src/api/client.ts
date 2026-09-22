@@ -64,6 +64,10 @@ export const api = {
     req<{ ok: boolean; reply?: string; error?: string }>(`/api/keys/${id}/test`, {
       method: "POST",
     }),
+  probeKey: (id: number) =>
+    req<any>(`/api/keys/${id}/probe`, { method: "POST" }),
+  updateKeyCapability: (id: number, capability: string) =>
+    req<any>(`/api/keys/${id}/capability`, { method: "PUT", body: JSON.stringify({ capability }) }),
   deleteKey: (id: number) => req<any>(`/api/keys/${id}`, { method: "DELETE" }),
 
   // Agent
