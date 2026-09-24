@@ -28,8 +28,29 @@ class ProjectOut(ORMBase):
     created_at: datetime
 
 
+class ProjectMemoryOut(ORMBase):
+    id: int
+    project_id: int
+    kind: str  # auto/manual
+    title: str
+    content: str
+    tags: str | None
+    source_task_id: int | None
+    pinned: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectMemoryCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1)
+    tags: str | None = None
+
+
 class ProjectMemoryUpdate(BaseModel):
-    memory: str
+    title: str | None = Field(default=None, max_length=120)
+    content: str | None = None
+    pinned: bool | None = None
 
 
 class RenameRequest(BaseModel):

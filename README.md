@@ -80,17 +80,40 @@ cd frontend && npm run tauri dev
 
 ---
 
-## 打包分发（Mac .dmg）
+## 打包分发（macOS / Windows / Linux）
+
+> **核心原则：PyInstaller 不能交叉编译**——后端 sidecar 必须在**目标平台本身**上打包（在 Mac 上只能打出 Mac 版，Windows/Linux 同理）。Tauri 桌面包同样在目标平台上构建。因此每个平台都走同样两步：① 在该平台打包后端 → ② 复制为 sidecar 后打包桌面应用。
+
+### 0. sidecar 命名规则（重要）
+
+Tauri 通过 `externalBin` 自动按「当前平台的三元组」找 sidecar，文件名必须是：
+
+| 平台 | sidecar 文件名（backend/binaries/ 下） |
+|---|---|
+| macOS Apple Silicon | `multiagent-backend-aarch64-apple-darwin` |
+| macOS Intel | `multiagent-backend-x86_64-apple-darwin` |
+| Windows x64 | `multiagent-backend-x86_64-pc-windows-msvc.exe` |
+| Linux x64 | `multiagent-backend-x86_64-unknown-linux-gnu` |
+
+打包后端前，先确认 `frontend/src-tauri/tauri.conf.json` 的 `bundle.targets` 覆盖目标平台：
+
+```json
+"targets": ["dmg", "app", "nsis", "deb", "appimage"]  // mac: dmg/app；windows: nsis(或msi)；linux: deb/appimage(或rpm)
+```
+
+不写 `targets` 时 Tauri 会用各平台默认（mac=dmg+app，win=msi+nsis，linux=deb+appimage），一般够用。
+
+### 1. macOS（.app + .dmg）
 
 ```bash
-# 1. 打包后端为独立可执行（sidecar，供 app 内嵌启动）
+# 1. 打包后端为独立可执行（sidecar）
 cd backend && .venv/bin/pyinstaller --noconfirm --clean --onefile --name multiagent-backend \
   --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto \
   --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto \
   --hidden-import uvicorn.lifespan.on --collect-all anthropic --collect-all openai \
   --collect-all pypdf --collect-all docx --collect-all openpyxl \
   entry_backend.py
-# 复制为 sidecar（注意目标三元组后缀与 CPU 架构一致）
+# 复制为 sidecar（后缀与 CPU 架构一致：aarch64 = Apple Silicon / x86_64 = Intel）
 cp dist/multiagent-backend ../frontend/src-tauri/binaries/multiagent-backend-aarch64-apple-darwin
 
 # 2. 打包桌面应用（产出 .app + .dmg）
@@ -98,7 +121,62 @@ cd ../frontend && npm run tauri build
 # 产物位于 src-tauri/target/release/bundle/dmg/ 与 macos/
 ```
 
-> 打包后的 .app 首次启动会自动拉起内嵌后端并等待就绪（日志见 `~/.multi-agent/backend.log`），随后打开主窗口；若 8765 端口已有后端在运行则直接复用。
+依赖：`brew install poppler`、`brew install --cask libreoffice`。
+
+### 2. Windows（NSIS 安装包 / MSI）
+
+前置：Node 20+、Python 3.13+、Rust（rustup）、[LibreOffice](https://www.libreoffice.org/download/)（或 `winget install TheDocumentFoundation.LibreOffice`）、poppler（`winget install oschwartz10612.Poppler` 或 `choco install poppler`）。**构建工具链需 MSVC**（`rustup default stable-msvc` + Visual Studio Build Tools）。
+
+```powershell
+# 1. 打包后端（PowerShell，在 backend 目录）
+cd backend
+.venv\Scripts\pyinstaller --noconfirm --clean --onefile --name multiagent-backend `
+  --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto `
+  --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto `
+  --hidden-import uvicorn.lifespan.on --collect-all anthropic --collect-all openai `
+  --collect-all pypdf --collect-all docx --collect-all openpyxl `
+  entry_backend.py
+
+# 2. 复制为 sidecar（注意 .exe 后缀）
+Copy-Item dist\multiagent-backend.exe ..\frontend\src-tauri\binaries\multiagent-backend-x86_64-pc-windows-msvc.exe
+
+# 3. 打包桌面应用（产出 .msi / .exe 安装包）
+cd ..\frontend
+npm run tauri build
+# 产物位于 src-tauri\target\release\bundle\msi\ 与 nsis\
+```
+
+> 注意：`beforeBuildCommand` 目前是 `bash scripts/build.sh`，Windows 上需要 Git Bash 才能执行（或改成 `npm run build` 跨平台兼容）。首次 `npm run tauri build` 会编译 Rust，耗时较长，属正常现象。
+
+### 3. Linux（deb / AppImage）
+
+前置：Node 20+、Python 3.13+、Rust（rustup）、`sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2`、LibreOffice（`sudo apt install libreoffice`）、poppler-utils（`sudo apt install poppler-utils`）。
+
+```bash
+# 1. 打包后端
+cd backend && .venv/bin/pyinstaller --noconfirm --clean --onefile --name multiagent-backend \
+  --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto \
+  --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto \
+  --hidden-import uvicorn.lifespan.on --collect-all anthropic --collect-all openai \
+  --collect-all pypdf --collect-all docx --collect-all openpyxl \
+  entry_backend.py
+
+# 2. 复制为 sidecar
+cp dist/multiagent-backend ../frontend/src-tauri/binaries/multiagent-backend-x86_64-unknown-linux-gnu
+
+# 3. 打包桌面应用（产出 .deb / .AppImage）
+cd ../frontend && npm run tauri build
+# 产物位于 src-tauri/target/release/bundle/deb/ 与 appimage/
+```
+
+> Linux 上 PyInstaller 产物依赖当前系统的 glibc，**在较旧的发行版上打包可获得更广的兼容性**（AppImage 同理）。
+
+### 4. 各平台通用说明
+
+- **Office 转 PDF 预览**：运行时依赖目标机器上的 LibreOffice（`libreoffice --headless --convert-to pdf`），当前版本未随包内置，分发目标机器需自行安装（后续可考虑内置）。
+- **PDF 转图**：依赖 poppler 的 `pdftoppm`（mac `poppler` / Windows poppler / Linux `poppler-utils`）。
+- **端口复用**：打包后的应用启动时会拉起内嵌后端并等待就绪（日志 `~/.multi-agent/backend.log`）；若 8765 端口已有后端在运行则直接复用，不重复启动。
+- **数据目录**：SQLite 库 `~/.multi-agent/multiagent.db`、项目产物 `~/Multi-agent/{项目名}/`（Windows 为 `%USERPROFILE%` 下，Linux 为 `$HOME` 下）。
 
 ---
 

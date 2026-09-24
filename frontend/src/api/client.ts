@@ -39,12 +39,19 @@ export const api = {
     req<any>(`/api/projects/${id}?delete_folder=${deleteFolder}`, {
       method: "DELETE",
     }),
-  getProjectMemory: (id: number) => req<any>(`/api/projects/${id}/memory`),
-  updateProjectMemory: (id: number, memory: string) =>
-    req<any>(`/api/projects/${id}/memory`, {
-      method: "PUT",
-      body: JSON.stringify({ memory }),
+  listMemories: (projectId: number) => req<any[]>(`/api/projects/${projectId}/memories`),
+  createMemory: (projectId: number, data: { title: string; content: string; tags?: string }) =>
+    req<any>(`/api/projects/${projectId}/memories`, {
+      method: "POST",
+      body: JSON.stringify(data),
     }),
+  updateMemory: (memoryId: number, data: { title?: string; content?: string; pinned?: boolean }) =>
+    req<any>(`/api/memories/${memoryId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteMemory: (memoryId: number) =>
+    req<any>(`/api/memories/${memoryId}`, { method: "DELETE" }),
   listSessions: (projectId: number) =>
     req<any[]>(`/api/projects/${projectId}/sessions`),
   listRecentSessions: (limit = 30, archived = false) =>

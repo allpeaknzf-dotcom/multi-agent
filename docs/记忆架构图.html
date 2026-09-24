@@ -1,0 +1,70 @@
+<html style="margin:0;padding:0;">
+<title>项目记忆修复架构图（路线A·瘦身版）</title>
+<div style="width:100%;box-sizing:border-box;background:#f8fafc;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#1e293b;padding:24px 16px;border-radius:12px;">
+  <div style="font-size:18px;font-weight:700;margin-bottom:4px;">项目记忆修复架构 · 路线 A（瘦身版）（示意）</div>
+  <div style="font-size:13px;color:#64748b;margin-bottom:20px;">写入链路 → 条目化存储 → 分层读取注入 · 修复点①~⑤对应问题清单 · 治理机制延后、提炼为开关</div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:stretch;">
+
+    <!-- 左：写入链路 -->
+    <div style="flex:1;min-width:260px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+      <div style="font-size:14px;font-weight:700;color:#2563eb;margin-bottom:10px;">① 写入链路（任务完成后）</div>
+      <div style="font-size:13px;line-height:1.9;">
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:6px 10px;">任务完成 · 主理人 merge 结果</div>
+        <div style="text-align:center;color:#94a3b8;">▼</div>
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px 10px;">空值保护：结果为空 → 不落库 <span style="color:#dc2626;font-weight:700;">修①</span></div>
+        <div style="text-align:center;color:#94a3b8;">▼</div>
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:6px 10px;">摘要截断 + 省略号（默认，零 LLM 依赖）<br><span style="color:#64748b;">可选开关：LLM 提炼 2~5 条要点，失败降级</span> <span style="color:#dc2626;font-weight:700;">修③</span></div>
+        <div style="text-align:center;color:#94a3b8;">▼</div>
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:6px 10px;">标题用任务名截断 ≤60 字 <span style="color:#dc2626;font-weight:700;">修②</span></div>
+        <div style="text-align:center;color:#94a3b8;">▼</div>
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:6px 10px;">按「项目+标题」去重：同任务重跑命中同标题 → 更新不追加（source_task_id 仅溯源） <span style="color:#dc2626;font-weight:700;">修⑤</span></div>
+        <div style="text-align:center;color:#94a3b8;">▼</div>
+        <div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;">写入 project_memories + 显式同步 FTS5</div>
+      </div>
+    </div>
+
+    <!-- 中：存储层 -->
+    <div style="flex:1;min-width:240px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+      <div style="font-size:14px;font-weight:700;color:#7c3aed;margin-bottom:10px;">② 存储层（条目化，替代单字段）</div>
+      <div style="font-size:13px;">
+        <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+          <div style="background:#ede9fe;padding:8px 10px;font-weight:600;">核心记忆 Core（常驻）</div>
+          <div style="padding:6px 10px;border-top:1px solid #f1f5f9;">pinned=1 + 最近 5 条 · 注入 ≤1500 字</div>
+        </div>
+        <div style="text-align:center;color:#94a3b8;margin:2px 0;">▾</div>
+        <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+          <div style="background:#fef3c7;padding:8px 10px;font-weight:600;">归档记忆 Archival（按需）</div>
+          <div style="padding:6px 10px;border-top:1px solid #f1f5f9;">kind=auto / manual · FTS5 检索 Top-5</div>
+          <div style="padding:6px 10px;border-top:1px solid #f1f5f9;color:#64748b;">软上限 1000 条：仅提示，不自动删除</div>
+        </div>
+        <div style="margin-top:10px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:6px;padding:6px 10px;color:#475569;">
+          字段：id / project_id / kind / title / content / tags / source_task_id / pinned / 时间戳<br>
+          检索层可插拔：FTS5（默认）→ 向量检索（触发条件后启用）
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：读取链路 -->
+    <div style="flex:1;min-width:260px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+      <div style="font-size:14px;font-weight:700;color:#059669;margin-bottom:10px;">③ 读取链路（每次 Agent 调用）</div>
+      <div style="font-size:13px;line-height:1.9;">
+        <div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;">核心块：pinned + 最近 5 条（始终注入）</div>
+        <div style="text-align:center;color:#94a3b8;">▲</div>
+        <div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;">检索块：关键词 ≥2 且 FTS（trigram）有命中才注入 Top-5（防噪音；bm25 仅排序不定阈值）</div>
+        <div style="text-align:center;color:#94a3b8;">▲</div>
+        <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:6px;padding:6px 10px;">总量预算 ≤3000 字，先保核心块</div>
+        <div style="text-align:center;color:#94a3b8;">▲</div>
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:6px 10px;">
+          注入子 Agent（manager._call_agent）<br>＋ 新增主理人 plan / merge（orchestrator._call_agent）<span style="color:#dc2626;font-weight:700;">修④</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:16px;font-size:12px;color:#94a3b8;line-height:1.7;">
+    修复点：① 空记录不落库 · ② 标题不用需求全文 · ③ 截断带省略标记 · ④ 主理人同样注入记忆 · ⑤ 同任务去重更新。<br>
+    瘦身决策：淘汰/衰减治理延后（软上限仅提示）；LLM 提炼为配置开关（默认关）；检索层 `backend` 可插拔，触发条件（条目&gt;500 且实测漏召回）后换向量实现。<br>
+    参考：Mem0（记忆即一等对象 / 提取式 / update 语义）、MemGPT·Letta（Core-Archival 分层 / 按需检索）。示意结构，非实现代码。
+  </div>
+</div>

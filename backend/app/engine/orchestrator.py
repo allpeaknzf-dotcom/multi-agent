@@ -111,8 +111,20 @@ class OrchestratorService:
         messages: list[ChatMessage],
         *,
         system: str,
+        project_id: int | None = None,
+        memory_query: str | None = None,
     ) -> str:
+        """调用成员/主理人。传入 project_id 时把项目记忆（分层注入）追加进 system prompt，
+        让主理人拆解（plan）/验收（review）/汇总（merge）也参考历史结论。"""
         provider = build_provider(agent)
+        if project_id:
+            from .memory import build_memory_blocks
+
+            memory_block = build_memory_blocks(
+                self.db, project_id, query=memory_query
+            )
+            if memory_block:
+                system = f"{system}\n\n{memory_block}" if system else memory_block
         result = await provider.chat(
             messages,
             system=system,
@@ -162,7 +174,13 @@ class OrchestratorService:
             messages = ctx_msgs + messages
 
         # 首次规划
-        raw = await self._call_agent(host, messages, system=_PLAN_SYSTEM)
+        raw = await self._call_agent(
+            host,
+            messages,
+            system=_PLAN_SYSTEM,
+            project_id=session.project_id,
+            memory_query=user_task,
+        )
         plans = self._extract_plans(raw)
         if not plans:
             await self._status(session.id, "拆解解析失败，降级为单任务执行。")
@@ -184,6 +202,8 @@ class OrchestratorService:
                 host,
                 messages[:-1] + [ChatMessage(role="user", content=retry_input)],
                 system=_PLAN_SYSTEM,
+                project_id=session.project_id,
+                memory_query=user_task,
             )
             resolved, bad_names = self._resolve_plans(
                 session, self._extract_plans(raw2)
@@ -364,6 +384,8 @@ class OrchestratorService:
             host,
             [ChatMessage(role="user", content=prompt)],
             system=_REVIEW_SYSTEM,
+            project_id=session.project_id,
+            memory_query=task.title,
         )
         try:
             verdict = _extract_json(raw)
@@ -391,6 +413,8 @@ class OrchestratorService:
             host,
             [ChatMessage(role="user", content=f"各子任务结果如下：\n\n{block}")],
             system=_MERGE_SYSTEM,
+            project_id=session.project_id,
+            memory_query=" ".join(t for t, _ in subtask_results),
         )
         return raw
 

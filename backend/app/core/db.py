@@ -150,12 +150,45 @@ def _seed_templates() -> None:
         db.commit()
 
 
+def _ensure_project_memory_fts() -> None:
+    """建项目记忆 FTS5 全文索引（外部内容表，需手动同步）。
+
+    create_all 无法建虚拟表，这里单独保证存在；新建时把主表存量一次性灌入。
+    """
+    from sqlalchemy import text as _text
+
+    with engine.begin() as conn:
+        created = False
+        row = conn.execute(
+            _text(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='project_memories_fts'"
+            )
+        ).fetchone()
+        if not row:
+            conn.execute(
+                _text(
+                    "CREATE VIRTUAL TABLE project_memories_fts USING fts5("
+                    "title, content, tokenize='trigram')"
+                )
+            )
+            created = True
+        if created:
+            conn.execute(
+                _text(
+                    "INSERT INTO project_memories_fts(rowid, title, content) "
+                    "SELECT id, title, content FROM project_memories"
+                )
+            )
+
+
 def init_db() -> None:
-    """建表（若不存在）+ 迁移 + 播种预置模板。"""
+    """建表（若不存在）+ 迁移 + FTS 索引 + 播种预置模板。"""
     from ..models import entities  # noqa: F401  确保所有实体注册到 metadata
 
     Base.metadata.create_all(bind=engine)
     _migrate()
+    _ensure_project_memory_fts()
     _seed_templates()
 
 

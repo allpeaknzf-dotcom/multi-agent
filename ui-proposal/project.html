@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-agent 项目原型</title>
+    <link rel="stylesheet" href="./proposal-pages.css" />
+  </head>
+  <body>
+    <div class="simple-shell">
+      <aside class="simple-sidebar">
+        <a class="simple-brand" href="./home.html"><img src="../frontend/public/logo.png" alt="Multi-agent" /><span>Multi-agent</span></a>
+        <button class="primary-action" type="button">新对话</button>
+        <label class="simple-search"><input placeholder="搜索" aria-label="搜索项目和对话" /></label>
+        <nav class="simple-nav" aria-label="工作区导航">
+          <p>项目</p>
+          <a class="nav-item selected" href="./project.html"><i class="project-color blue"></i><span>支付稳定性专项</span><small>4</small></a>
+          <a class="conversation-link active" href="./index.html">Payout 超时排查</a>
+          <a class="conversation-link" href="./index.html">灰度发布回归</a>
+          <a class="conversation-link" href="./index.html">监控指标复盘</a>
+          <a class="nav-item" href="./project.html"><i class="project-color amber"></i><span>KA 自动化平台</span><small>2</small></a>
+        </nav>
+        <a class="settings-link" href="./settings.html">设置</a>
+      </aside>
+      <main class="simple-main project-main">
+        <header class="page-header">
+          <div><p class="page-kicker">项目</p><h1><i class="project-color blue"></i>支付稳定性专项</h1></div>
+          <div class="header-tools"><button class="icon-control" title="更多操作" aria-label="更多操作">...</button><button class="primary-action header-action" type="button">新对话</button></div>
+        </header>
+        <section class="compact-section sessions-section">
+          <div class="section-title"><h2>对话</h2><label class="inline-search"><input placeholder="搜索对话" aria-label="搜索对话" /></label></div>
+          <div class="session-list-clean">
+            <a class="session-clean active-session" href="./index.html"><span class="status-dot active"></span><span><strong>Payout 超时排查</strong><small>协作进行中 · 最后更新 2 分钟前</small></span><b>进入</b></a>
+            <a class="session-clean" href="./index.html"><span class="status-dot"></span><span><strong>灰度发布回归</strong><small>已完成 · 最后更新 昨天 18:20</small></span><b>查看</b></a>
+            <a class="session-clean" href="./index.html"><span class="status-dot"></span><span><strong>监控指标复盘</strong><small>已完成 · 最后更新 周一 11:32</small></span><b>查看</b></a>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

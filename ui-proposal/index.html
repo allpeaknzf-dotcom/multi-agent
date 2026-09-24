@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-agent UI 方案预览</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-row">
+          <img class="brand-logo" src="../frontend/public/logo.png" alt="Multi-agent" />
+          <span class="brand-name">Multi-agent</span>
+          <button class="icon-button brand-more" aria-label="工作区菜单" title="工作区菜单">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
+          </button>
+        </div>
+
+        <button class="new-session" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <span>新对话</span>
+          <kbd>⌘ K</kbd>
+        </button>
+
+        <label class="search-box">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+          <input placeholder="搜索项目和对话" />
+          <span>⌘ /</span>
+        </label>
+
+        <nav class="workspace-nav" aria-label="工作区导航">
+          <div class="nav-heading">
+            <span>项目</span>
+            <button class="icon-button" aria-label="新建项目" title="新建项目">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
+
+          <button class="project-row active" type="button">
+            <span class="project-dot dot-blue"></span>
+            <span class="truncate">支付稳定性专项</span>
+            <span class="count">4</span>
+          </button>
+          <div class="session-list">
+            <button class="session-row selected" type="button">
+              <span class="session-line"></span>
+              <span class="session-state live"></span>
+              <span class="truncate">Payout 超时排查</span>
+            </button>
+            <button class="session-row" type="button">
+              <span class="session-line"></span>
+              <span class="session-state"></span>
+              <span class="truncate">灰度发布回归</span>
+            </button>
+            <button class="session-row" type="button">
+              <span class="session-line"></span>
+              <span class="session-state"></span>
+              <span class="truncate">监控指标复盘</span>
+            </button>
+          </div>
+
+          <button class="project-row" type="button">
+            <span class="project-dot dot-amber"></span>
+            <span class="truncate">KA 自动化平台</span>
+            <span class="count">2</span>
+          </button>
+          <button class="project-row" type="button">
+            <span class="project-dot dot-teal"></span>
+            <span class="truncate">测试知识沉淀</span>
+          </button>
+
+          <div class="nav-heading recent-heading"><span>最近</span></div>
+          <button class="recent-row" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a8.5 8.5 0 1 1-2.49-6.01L20 8"/><path d="M20 4v4h-4"/><path d="M12 7v5l3 2"/></svg>
+            <span class="truncate">OpenRouter 模型选型</span>
+          </button>
+          <button class="recent-row" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a8.5 8.5 0 1 1-2.49-6.01L20 8"/><path d="M20 4v4h-4"/><path d="M12 7v5l3 2"/></svg>
+            <span class="truncate">支付链路压测方案</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button class="footer-row" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.09A1.7 1.7 0 0 0 9 19.35a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.07 14H3v-4h.09A1.7 1.7 0 0 0 4.65 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.07V3h4v.09A1.7 1.7 0 0 0 15 4.65a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.93 10H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+            <span>设置</span>
+          </button>
+          <button class="account-row" type="button">
+            <span class="avatar avatar-user">P</span>
+            <span class="account-copy"><strong>Peak</strong><small>个人工作区</small></span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+        </div>
+      </aside>
+
+      <main class="conversation">
+        <header class="conversation-header">
+          <div class="crumb-row">
+            <span class="crumb">支付稳定性专项</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            <span class="title-edit">Payout 超时排查</span>
+            <button class="icon-button" aria-label="重命名会话" title="重命名会话">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
+            </button>
+          </div>
+          <div class="header-actions">
+            <span class="sync-state"><i></i> 已同步</span>
+            <button class="icon-button" aria-label="会话信息" title="会话信息">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>
+            </button>
+            <button class="icon-button" aria-label="更多会话操作" title="更多会话操作">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <section class="task-context compact-context">
+          <span class="status-pill active-status"><i></i> 协作进行中</span>
+          <h1>定位 Payout AC 订单超时的主要原因，并给出修复优先级</h1>
+        </section>
+
+        <section class="message-stream" aria-label="协作消息">
+          <div class="date-marker"><span>今天</span></div>
+
+          <article class="message user-message">
+            <span class="avatar avatar-user">P</span>
+            <div class="message-body">
+              <div class="message-head"><strong>Peak</strong><time>10:32</time></div>
+              <p>请结合昨天的告警和订单链路日志，确认 AC 订单超时是否集中在某个环节。需要一份可以直接进入排期的修复建议。</p>
+              <div class="attachment-card">
+                <div class="file-icon file-csv">CSV</div>
+                <div><strong>payout_timeout_sample.csv</strong><small>128 KB · 已作为任务上下文</small></div>
+                <button class="icon-button" aria-label="查看附件" title="查看附件"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="m10 14 11-11"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg></button>
+              </div>
+            </div>
+          </article>
+
+          <article class="message orchestrator-message">
+            <span class="avatar avatar-blue">O</span>
+            <div class="message-body">
+              <div class="message-head"><strong>Orion <span class="role-badge">主理人</span></strong><time>10:33</time></div>
+              <p>收到。我会先分成三路：订单样本归因、服务链路排查、告警与容量关联。完成后汇总为可执行的修复清单。</p>
+              <div class="task-strip">
+                <span class="task-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
+                <span><strong>已启动 3 个子任务</strong><small>由 Orion 自动编排</small></span>
+                <button class="text-button" type="button">查看进度</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="message agent-message">
+            <span class="avatar avatar-teal">D</span>
+            <div class="message-body">
+              <div class="message-head"><strong>Delta</strong><span class="agent-role">数据分析</span><time>10:39</time></div>
+              <p>样本中 82% 的超时发生在 <code>AC_PENDING</code> 到通道回执之间，且在 14:00–16:00 出现明显聚集。订单创建本身的 P95 正常。</p>
+              <div class="finding-card">
+                <div class="finding-label">关键发现</div>
+                <div class="finding-content"><strong>通道回执等待超过 90 秒</strong><span>样本 154 / 188 单</span></div>
+                <div class="mini-bars"><i style="height:28%"></i><i style="height:35%"></i><i style="height:42%"></i><i style="height:57%"></i><i style="height:88%"></i><i style="height:76%"></i><i style="height:44%"></i></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="message agent-message latest-message">
+            <span class="avatar avatar-amber">C</span>
+            <div class="message-body">
+              <div class="message-head"><strong>Cirrus</strong><span class="agent-role">后端排查</span><time>10:41</time></div>
+              <p>已确认消费者没有积压，但回执同步服务存在重试风暴：网络抖动时同一订单会被并发重试 3 次，放大了下游压力。我建议先加订单级幂等锁和退避策略。</p>
+              <div class="message-actions">
+                <button class="reaction" type="button">有帮助 <span>2</span></button>
+                <button class="message-action" type="button">回复</button>
+                <button class="message-action" type="button">引用</button>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <div class="composer-wrap">
+          <div class="composer">
+            <div class="composer-top">
+              <button class="icon-button" aria-label="上传附件" title="上传附件"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-9.8 9.8a6 6 0 0 1-8.5-8.5l9.8-9.8a4 4 0 1 1 5.7 5.7l-9.9 9.8a2 2 0 0 1-2.8-2.8l9.2-9.2"/></svg></button>
+              <button class="icon-button" aria-label="引用项目记忆" title="引用项目记忆"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></svg></button>
+              <button class="target-select" type="button"><span>@</span> 所有成员 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+            </div>
+            <textarea aria-label="输入协作消息" placeholder="补充任务、追问结果，或 @ 指定成员…"></textarea>
+            <div class="composer-bottom">
+              <span class="composer-hint">Enter 发送 · Shift + Enter 换行</span>
+              <button class="send-button" type="button">发送 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-7-4 14-3-5-5-2Z"/><path d="m12 12 3-3"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- 会话详情由顶部的信息按钮按需打开，默认不占用协作区域。 -->
+      <aside class="inspector" hidden>
+        <section class="inspector-section member-section">
+          <div class="inspector-heading"><span>协作成员</span><button class="icon-button" aria-label="添加成员" title="添加成员"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
+          <div class="member-row"><span class="avatar avatar-blue">O</span><span class="member-info"><strong>Orion</strong><small>主理人 · 正在汇总</small></span><span class="presence active"></span></div>
+          <div class="member-row"><span class="avatar avatar-teal">D</span><span class="member-info"><strong>Delta</strong><small>数据分析 · 已完成</small></span><span class="presence done"></span></div>
+          <div class="member-row"><span class="avatar avatar-amber">C</span><span class="member-info"><strong>Cirrus</strong><small>后端排查 · 已完成</small></span><span class="presence done"></span></div>
+          <div class="member-row"><span class="avatar avatar-rose">N</span><span class="member-info"><strong>Nori</strong><small>稳定性 · 进行中</small></span><span class="presence active"></span></div>
+        </section>
+
+        <section class="inspector-section progress-section">
+          <div class="inspector-heading"><span>任务进度</span><span class="progress-number">2 / 3</span></div>
+          <div class="progress-track"><span></span></div>
+          <div class="subtask-row"><span class="subtask-check done">✓</span><span>订单样本归因</span><small>完成</small></div>
+          <div class="subtask-row"><span class="subtask-check done">✓</span><span>服务链路排查</span><small>完成</small></div>
+          <div class="subtask-row"><span class="subtask-check working"></span><span>告警与容量关联</span><small>进行中</small></div>
+        </section>
+
+        <section class="inspector-section artifacts-section">
+          <div class="inspector-heading"><span>本次产物</span><button class="text-button" type="button">查看全部</button></div>
+          <button class="artifact-row" type="button"><span class="artifact-icon code">{ }</span><span><strong>timeout-analysis.sql</strong><small>Delta · 10:39</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+          <button class="artifact-row" type="button"><span class="artifact-icon doc">MD</span><span><strong>retry-risk-note.md</strong><small>Cirrus · 10:41</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+          <button class="artifact-row" type="button"><span class="artifact-icon image">IMG</span><span><strong>latency-trend.png</strong><small>Delta · 10:39</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+        </section>
+
+        <section class="inspector-section memory-section">
+          <div class="inspector-heading"><span>项目记忆</span><button class="text-button" type="button">管理</button></div>
+          <div class="memory-note"><span class="memory-pin">●</span><p><strong>超时判定标准</strong>AC 订单超过 120 秒未收到终态回执，计入超时。</p></div>
+          <div class="memory-note"><span class="memory-pin soft">●</span><p><strong>容量风险窗口</strong>工作日下午 14:00–16:00 为高风险时段。</p></div>
+        </section>
+      </aside>
+    </div>
+    <script src="./script.js"></script>
+  </body>
+</html>

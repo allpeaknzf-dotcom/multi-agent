@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useMessage } from "naive-ui";
 import { marked } from "marked";
@@ -14,10 +14,22 @@ const message = useMessage();
 const agentsStore = useAgentsStore();
 const store = useSessionStore();
 
-const sessionId = Number(route.params.sid);
+// 注意：必须响应路由参数变化（侧边栏切换会话时组件复用，id 会变）
+let sessionId = Number(route.params.sid);
 const session = ref<any>(null);
 const allAgents = ref<any[]>([]);
 const busy = ref(false);
+const showInspector = ref(false);
+const expandedMessages = ref<Set<number>>(new Set());
+
+const activeMembers = computed(() =>
+  store.members.filter((m: any) => m.status === "active")
+);
+const currentTask = computed(() =>
+  store.tasks.find((t: any) => t.status === "running") ||
+  store.tasks.find((t: any) => t.status === "pending") ||
+  store.tasks[0]
+);
 
 // 会话重命名
 const showRename = ref(false);
@@ -287,6 +299,38 @@ function renderContent(content: string): string {
   return DOMPurify.sanitize(raw);
 }
 
+function messageNeedsCollapse(content: string): boolean {
+  return content.length > 280 || /```|\|.+\||^#{1,3}\s/m.test(content);
+}
+
+function messagePreview(content: string): string {
+  const plain = content
+    .replace(/```[\s\S]*?```/g, "[代码内容]")
+    .replace(/\|.+\|/g, "[表格内容]")
+    .replace(/^#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\s+/g, " ")
+    .trim();
+  return plain.length > 180 ? `${plain.slice(0, 180).trimEnd()}…` : plain;
+}
+
+function isSandboxStatus(status: string): boolean {
+  return /^沙箱[：:]/.test(status);
+}
+
+function isMessageExpanded(id: number): boolean {
+  return expandedMessages.value.has(id);
+}
+
+function toggleMessageExpansion(id: number) {
+  const next = new Set(expandedMessages.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedMessages.value = next;
+}
+
 function avatarColor(id: number): string {
   const colors = ["#6366f1", "#0ea5e9", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"];
   return colors[id % colors.length];
@@ -313,8 +357,12 @@ function showMemberTip(m: any, e: MouseEvent) {
   };
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
   const w = 300;
-  tipLeft.value = Math.max(8, Math.min(rect.right + 10, window.innerWidth - w - 12));
-  tipTop.value = Math.max(8, rect.top);
+  // 信息面板在右侧，提示优先放到成员行左边，避免遮挡右侧的操作菜单。
+  const preferredLeft = rect.left - w - 12;
+  tipLeft.value = preferredLeft >= 8
+    ? preferredLeft
+    : Math.min(rect.right + 12, window.innerWidth - w - 12);
+  tipTop.value = Math.max(8, Math.min(rect.top, window.innerHeight - 220));
   tipVisible.value = true;
   if (tipTimer) {
     clearTimeout(tipTimer);
@@ -327,13 +375,6 @@ function hideMemberTip() {
     tipVisible.value = false;
   }, 200);
 }
-function cancelTipHide() {
-  if (tipTimer) {
-    clearTimeout(tipTimer);
-    tipTimer = null;
-  }
-}
-
 // 附件收集：选择文件先进入待发栏（最多 10 个），点「发送」时才一起上传发出
 const MAX_FILES = 10;
 const uploading = ref(false);
@@ -475,15 +516,23 @@ async function reloadMembers() {
   store.members = await api.listMembers(sessionId);
 }
 
-// 启动时连接 WS
-onMounted(async () => {
-  try {
-    await load();
-  } catch (e: any) {
-    message.error(e.message || "加载会话失败");
-  }
-  store.connect(sessionId);
-});
+// 启动时连接 WS；路由参数变化（切换会话）时重连并重载
+watch(
+  () => route.params.sid,
+  () => {
+    sessionId = Number(route.params.sid);
+    store.disconnect();
+    store.messages = [];
+    store.statuses = [];
+    store.tasks = [];
+    load()
+      .catch((e: any) => message.error(e.message || "加载会话失败"))
+      .finally(() => {
+        store.connect(sessionId);
+      });
+  },
+  { immediate: true }
+);
 
 onBeforeUnmount(() => {
   store.disconnect();
@@ -519,64 +568,24 @@ function taskStatusLabel(s: string) {
 
 <template>
   <div class="session-wrap">
-    <!-- 左：成员 -->
-    <aside class="member-panel">
-      <div class="panel-title">成员 ({{ store.members.filter((m: any) => m.status === "active").length }})</div>
-      <div
-        v-for="m in store.members.filter((mm: any) => mm.status === 'active')"
-        :key="m.id"
-        class="member-item"
-        @mouseenter="showMemberTip(m, $event)"
-        @mouseleave="hideMemberTip"
-      >
-        <n-avatar :style="{ background: avatarColor(m.agent_id) }" round size="small">
-          {{ (agentOf(m)?.name || "A")[0] }}
-        </n-avatar>
-        <div class="member-info">
-          <div class="member-name">
-            {{ agentOf(m)?.name || `Agent#${m.agent_id}` }}
-            <n-tag v-if="m.role === 'host'" size="tiny" type="warning">主理人</n-tag>
-          </div>
-          <div class="member-sub">{{ agentOf(m)?.model || "" }}</div>
-        </div>
-        <n-dropdown
-          v-if="m.role !== 'host'"
-          trigger="click"
-          :options="[{ label: '设为主理人', key: 'host' }]"
-          @select="setHost(m.agent_id)"
-        >
-          <n-button size="tiny" quaternary>···</n-button>
-        </n-dropdown>
-      </div>
-
-      <n-button size="small" block dashed style="margin-top: 12px" @click="showInvite = true">
-        拉 Agent 进群
-      </n-button>
-
-      <!-- 派活 -->
-      <div class="task-zone">
-        <n-button v-if="!showTaskInput" size="small" type="warning" block @click="showTaskInput = true">
-          ⚡ 派活给主理人
-        </n-button>
-        <div v-else>
-          <n-input v-model:value="taskInput" type="textarea" :rows="3" placeholder="描述任务，主理人将拆解并分工" />
-          <n-space style="margin-top: 8px" justify="end">
-            <n-button size="small" @click="showTaskInput = false">取消</n-button>
-            <n-button size="small" type="warning" :loading="busy" @click="startTask">派活</n-button>
-          </n-space>
-        </div>
-      </div>
-    </aside>
-
-    <!-- 中：聊天 -->
     <main class="chat-area">
       <div class="chat-head">
-        <n-button size="small" quaternary @click="router.push(session?.project_id ? `/projects/${session.project_id}` : '/')">←</n-button>
+        <button class="header-icon back-btn" type="button" title="返回项目" aria-label="返回项目" @click="router.push(session?.project_id ? `/projects/${session.project_id}` : '/')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+        </button>
         <div class="chat-title">
+          <span v-if="session?.project_id" class="project-crumb">{{ session?.project_name || "项目" }}</span>
           <span>{{ session?.title || "会话" }}</span>
-          <n-button size="tiny" quaternary class="chat-rename-btn" title="重命名" @click="newTitle = session?.title || ''; showRename = true">✎</n-button>
+          <button class="header-icon chat-rename-btn" type="button" title="重命名" aria-label="重命名" @click="newTitle = session?.title || ''; showRename = true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>
+          </button>
         </div>
-        <n-tag v-if="session?.orchestrator_agent_id" size="small" type="warning">主理人已就位</n-tag>
+        <div class="chat-head-actions">
+          <span class="sync-state"><i></i>已同步</span>
+          <button class="header-icon" :class="{ active: showInspector }" type="button" title="会话信息" aria-label="会话信息" @click="showInspector = !showInspector">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 8h.01" /></svg>
+          </button>
+        </div>
       </div>
 
       <!-- 重命名会话 -->
@@ -591,56 +600,83 @@ function taskStatusLabel(s: string) {
       </n-modal>
 
       <!-- 状态栏 -->
-      <div v-if="store.statuses.length" class="status-strip">
-        <span v-for="(s, i) in store.statuses.slice(-3)" :key="i" class="status-item">{{ s }}</span>
+      <div v-if="store.statuses.length || store.typing.length" class="status-strip">
+        <span v-if="store.statuses.filter(isSandboxStatus).length" class="status-item">已完成 {{ store.statuses.filter(isSandboxStatus).length }} 次代码运行</span>
+        <span v-for="(s, i) in store.statuses.filter((item: string) => !isSandboxStatus(item)).slice(-2)" :key="i" class="status-item">{{ s }}</span>
         <span v-if="store.typing.length" class="status-typing">{{ store.typing.join("、") }} 正在思考…</span>
+      </div>
+
+      <div v-if="currentTask" class="task-context">
+        <span class="task-status" :class="`status-${currentTask.status}`">
+          <i></i>
+          {{ taskStatusLabel(currentTask.status) }}
+        </span>
+        <span class="task-context-title">{{ currentTask.title }}</span>
       </div>
 
       <div ref="msgBox" class="msg-box">
         <div v-for="m in store.messages" :key="m.id" class="msg-row" :class="m.sender_type">
           <!-- 用户 -->
-          <div v-if="m.sender_type === 'user'" class="bubble user-bubble">
-            <div class="msg-sender user-sender">我</div>
-            <!-- 附件消息：图片直接缩略图，其他文件卡片 -->
-            <div v-if="m.meta?.kind === 'attachment'" class="msg-attachment">
-              <img
-                v-if="m.meta.artifact_type === 'image'"
-                :src="api.artifactDownloadUrl(m.meta.artifact_id)"
-                class="att-thumb"
-                @click="previewAttachment(m)"
-              />
-              <div v-else class="att-file" @click="previewAttachment(m)">
-                <span class="att-icon">{{ m.meta.artifact_type === 'video' ? '🎬' : '📄' }}</span>
-                <span class="att-name">{{ m.meta.file_name }}</span>
+          <div v-if="m.sender_type === 'user'" class="message user-message">
+            <div class="user-avatar">我</div>
+            <div class="message-body">
+              <div class="msg-sender user-sender">我</div>
+              <div class="bubble user-bubble">
+                <div v-if="m.meta?.kind === 'attachment'" class="msg-attachment">
+                  <img
+                    v-if="m.meta.artifact_type === 'image'"
+                    :src="api.artifactDownloadUrl(m.meta.artifact_id)"
+                    class="att-thumb"
+                    @click="previewAttachment(m)"
+                  />
+                  <div v-else class="att-file" @click="previewAttachment(m)">
+                    <span class="att-icon">{{ m.meta.artifact_type === 'video' ? '🎬' : '📄' }}</span>
+                    <span class="att-name">{{ m.meta.file_name }}</span>
+                  </div>
+                </div>
+                <div v-else class="msg-content" v-html="renderContent(m.content)"></div>
               </div>
             </div>
-            <div v-else class="msg-content" v-html="renderContent(m.content)"></div>
           </div>
 
           <!-- Agent -->
-          <div v-else-if="m.sender_type === 'agent'" class="bubble agent-bubble">
-            <div class="msg-sender" :style="{ color: avatarColor(m.sender_id || 0) }">
-              <n-avatar round size="small" :style="{ background: avatarColor(m.sender_id || 0) }">
+          <div v-else-if="m.sender_type === 'agent'" class="message agent-message">
+            <n-avatar round size="small" class="agent-avatar" :style="{ background: avatarColor(m.sender_id || 0) }">
                 {{ m.sender_name[0] }}
-              </n-avatar>
+            </n-avatar>
+            <div class="message-body">
+              <div class="msg-sender" :style="{ color: avatarColor(m.sender_id || 0) }">
               <span class="sender-name">
                 {{ m.sender_name }}
                 <n-tag v-if="isHostMsg(m)" size="tiny" type="warning">主理人</n-tag>
               </span>
-            </div>
-            <div class="msg-content" v-html="renderContent(m.content)"></div>
-            <!-- 代码运行 -->
-            <div v-if="extractCodeBlocks(m.content).length" class="code-actions">
-              <n-button
-                v-for="(b, i) in extractCodeBlocks(m.content)"
-                :key="i"
-                size="tiny"
-                type="primary"
-                ghost
-                @click="runCodeBlock(b.lang, b.code)"
-              >
-                ▶ 运行 {{ b.lang || "代码" }}
-              </n-button>
+              </div>
+              <div class="bubble agent-bubble" :class="{ 'is-summary': messageNeedsCollapse(m.content) && !isMessageExpanded(m.id) }">
+                <div
+                  class="msg-content"
+                  v-html="renderContent(messageNeedsCollapse(m.content) && !isMessageExpanded(m.id) ? messagePreview(m.content) : m.content)"
+                ></div>
+                <button
+                  v-if="messageNeedsCollapse(m.content)"
+                  class="expand-message"
+                  type="button"
+                  @click="toggleMessageExpansion(m.id)"
+                >
+                  {{ isMessageExpanded(m.id) ? "收起完整内容" : "查看完整内容" }}
+                </button>
+                <div v-if="isMessageExpanded(m.id) && extractCodeBlocks(m.content).length" class="code-actions">
+                  <n-button
+                    v-for="(b, i) in extractCodeBlocks(m.content)"
+                    :key="i"
+                    size="tiny"
+                    type="primary"
+                    ghost
+                    @click="runCodeBlock(b.lang, b.code)"
+                  >
+                    ▶ 运行 {{ b.lang || "代码" }}
+                  </n-button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -671,38 +707,93 @@ function taskStatusLabel(s: string) {
             style="display: none"
             @change="addFiles"
           />
-          <n-button size="small" quaternary :loading="uploading" title="上传文件/图片（作为上下文供 Agent 读取）" class="at-btn" @click="fileInput?.click()">
-            📎
-          </n-button>
+          <div class="composer-tools">
+            <n-button size="small" quaternary :loading="uploading" title="上传文件/图片（作为上下文供 Agent 读取）" class="at-btn attachment-btn" @click="fileInput?.click()">
+              <span class="paperclip-icon" aria-hidden="true"></span>
+            </n-button>
+            <n-popselect
+              v-model:value="sendTarget"
+              :options="recipientOptions"
+              trigger="click"
+              placement="top-start"
+              size="small"
+              virtual-scroll
+            >
+              <button type="button" class="target-select" title="选择消息接收人">
+                <span class="mention-icon">@</span>{{ sendTarget === "all" ? "所有成员" : "指定成员" }}<span class="target-chevron">⌄</span>
+              </button>
+            </n-popselect>
+          </div>
           <n-input
             v-model:value="input"
             type="textarea"
-            :autosize="{ minRows: 1, maxRows: 12 }"
-            placeholder="输入消息，@Agent名 可定向发给某位 Agent，回车发送（Shift+Enter 换行）"
+            :autosize="{ minRows: 2, maxRows: 12 }"
+            placeholder="补充任务、追问结果，或 @ 指定成员…"
             class="msg-input"
             @keydown.enter.exact.prevent="send"
           />
-          <n-popselect
-            v-model:value="sendTarget"
-            :options="recipientOptions"
-            trigger="click"
-            placement="top-end"
-            size="small"
-            virtual-scroll
-          >
-            <n-button size="small" :type="sendTarget !== 'all' ? 'primary' : 'default'" ghost class="at-btn">
-              @
+          <div class="composer-footer">
+            <span class="composer-hint">Enter 发送 · Shift + Enter 换行</span>
+            <n-button type="primary" :loading="busy" @click="send" class="send-btn">
+              <span>发送</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-7-4 14-3-5-5-2Z" /><path d="m12 12 3-3" /></svg>
             </n-button>
-          </n-popselect>
-          <n-button type="primary" :loading="busy" @click="send" class="send-btn">发送</n-button>
+          </div>
         </div>
       </div>
     </main>
 
-    <!-- 右：任务 + 产物（上下各一半，各自滚动） -->
-    <aside class="task-panel">
-      <div class="panel-half">
-        <div class="panel-title">任务</div>
+    <aside v-if="showInspector" class="inspector-panel">
+      <div class="inspector-head">
+        <span>会话信息</span>
+        <n-button size="small" quaternary title="关闭信息面板" @click="showInspector = false">×</n-button>
+      </div>
+
+      <div class="panel-section panel-third members-section">
+        <div class="panel-title">成员 ({{ activeMembers.length }})</div>
+        <div class="panel-scroll">
+          <div
+            v-for="m in activeMembers"
+            :key="m.id"
+            class="member-item"
+            @mouseenter="showMemberTip(m, $event)"
+            @mouseleave="hideMemberTip"
+          >
+            <n-avatar :style="{ background: avatarColor(m.agent_id) }" round size="small">
+              {{ (agentOf(m)?.name || "A")[0] }}
+            </n-avatar>
+            <div class="member-info">
+              <div class="member-name">
+                {{ agentOf(m)?.name || `Agent#${m.agent_id}` }}
+                <n-tag v-if="m.role === 'host'" size="tiny" type="warning">主理人</n-tag>
+              </div>
+              <div class="member-sub">{{ agentOf(m)?.model || "" }}</div>
+            </div>
+            <n-dropdown
+              v-if="m.role !== 'host'"
+              trigger="click"
+              :options="[{ label: '设为主理人', key: 'host' }]"
+              @select="setHost(m.agent_id)"
+            >
+              <n-button size="tiny" quaternary>···</n-button>
+            </n-dropdown>
+          </div>
+        </div>
+        <n-button size="small" block dashed class="invite-agent-btn" @click="showInvite = true">拉 Agent 进群</n-button>
+      </div>
+
+      <div class="panel-section panel-third">
+        <div class="panel-title panel-title-actions">
+          <span>任务</span>
+          <n-button v-if="!showTaskInput" size="tiny" quaternary title="派活给主理人" @click="showTaskInput = true">+</n-button>
+        </div>
+        <div v-if="showTaskInput" class="task-composer">
+          <n-input v-model:value="taskInput" type="textarea" :rows="2" placeholder="描述任务" />
+          <n-space size="small" style="margin-top: 6px" justify="end">
+            <n-button size="tiny" @click="showTaskInput = false">取消</n-button>
+            <n-button size="tiny" type="warning" :loading="busy" @click="startTask">派活</n-button>
+          </n-space>
+        </div>
         <div class="panel-scroll">
           <n-empty v-if="store.tasks.length === 0" description="暂无任务" size="small" />
           <div v-for="t in store.tasks" :key="t.id" class="task-item" :class="t.status">
@@ -727,7 +818,7 @@ function taskStatusLabel(s: string) {
         </div>
       </div>
 
-      <div class="panel-half">
+      <div class="panel-section panel-third">
         <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
           <span>产物</span>
           <n-space size="small">
@@ -844,8 +935,6 @@ function taskStatusLabel(s: string) {
       v-if="tipVisible"
       class="member-tip-fixed"
       :style="{ left: tipLeft + 'px', top: tipTop + 'px' }"
-      @mouseenter="cancelTipHide"
-      @mouseleave="hideMemberTip"
     >
       <div class="member-tip-title">
         {{ tipContent?.name }}
@@ -864,20 +953,14 @@ function taskStatusLabel(s: string) {
 .session-wrap {
   display: flex;
   height: 100vh;
+  overflow: hidden;
+  background: #f8f9fb;
 }
 
-/* 左栏 */
-.member-panel {
-  width: 220px;
-  border-right: 1px solid #eceef2;
-  padding: 16px;
-  background: #fff;
-  overflow-y: auto;
-}
 .panel-title {
   font-weight: 600;
   font-size: 13px;
-  color: #666;
+  color: #454a54;
   margin-bottom: 10px;
 }
 .member-item {
@@ -917,7 +1000,7 @@ function taskStatusLabel(s: string) {
   font-size: 12px;
   line-height: 1.7;
   color: rgba(255, 255, 255, 0.92);
-  pointer-events: auto;
+  pointer-events: none;
 }
 .member-tip-title {
   font-weight: 600;
@@ -944,27 +1027,48 @@ function taskStatusLabel(s: string) {
   color: rgba(255, 255, 255, 0.65);
   padding: 4px 0;
 }
-.task-zone {
-  margin-top: 16px;
-  border-top: 1px solid #eceef2;
-  padding-top: 12px;
-}
-
-/* 中栏 */
 .chat-area {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  background: #fff;
 }
 .chat-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 16px;
+  min-height: 58px;
+  padding: 0 24px;
   border-bottom: 1px solid #eceef2;
   background: #fff;
 }
+.header-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #6d7884;
+  cursor: pointer;
+}
+.header-icon:hover,
+.header-icon.active { background: #eef1f4; color: #2563eb; }
+.header-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.back-btn { margin-right: 2px; }
 .chat-title {
   flex: 1;
   font-weight: 600;
@@ -980,19 +1084,49 @@ function taskStatusLabel(s: string) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.project-crumb {
+  color: #8a909a;
+  font-weight: 500;
+}
+.project-crumb::after {
+  content: "/";
+  margin-left: 8px;
+  color: #c4c8ce;
+}
+.chat-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.sync-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 6px;
+  color: #8a909a;
+  font-size: 12px;
+}
+.sync-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #18a66a;
+}
 .chat-rename-btn {
-  font-size: 13px;
+  width: 25px;
+  height: 25px;
   opacity: 0.5;
 }
+.chat-rename-btn svg { width: 13px; height: 13px; }
 .chat-rename-btn:hover {
   opacity: 1;
 }
 .status-strip {
-  padding: 4px 16px;
+  padding: 6px max(28px, calc((100% - 800px) / 2));
   font-size: 12px;
-  color: #8b5cf6;
-  background: #f5f3ff;
-  border-bottom: 1px solid #eceef2;
+  color: #718295;
+  background: #f8fafc;
+  border-bottom: 1px solid #edf0f3;
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
@@ -1001,42 +1135,123 @@ function taskStatusLabel(s: string) {
   color: #6366f1;
   font-style: italic;
 }
+.task-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: none;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 13px max(28px, calc((100% - 800px) / 2));
+  border: 0;
+  border-bottom: 1px solid #e4e8ed;
+  border-radius: 0;
+  color: #3f4650;
+  font-size: 13px;
+  background: #fff;
+}
+.task-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 4px;
+  padding: 3px 7px;
+  background: #ecf8f4;
+  color: #087f67;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.task-status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.task-status.status-paused { background: #fff7e8; color: #ad6800; }
+.task-status.status-done { background: #eef8f1; color: #238636; }
+.task-status.status-cancelled { background: #f4f5f6; color: #7d8792; }
+.task-context-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #17212b;
+  font-size: 14px;
+  font-weight: 600;
+}
 .msg-box {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
+  padding: 20px max(28px, calc((100% - 800px) / 2)) 172px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
 }
 .msg-row {
+  display: block;
+}
+.message {
   display: flex;
-  flex-direction: column;
-}
-.msg-row.user {
-  align-items: flex-end;
-}
-.msg-row.agent {
   align-items: flex-start;
+  gap: 10px;
+  max-width: 100%;
 }
+.message-body {
+  min-width: 0;
+  max-width: 670px;
+}
+.user-avatar {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #485d78;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.agent-avatar { flex: 0 0 auto; }
+.user-message { flex-direction: row; }
+.user-message .message-body { display: block; }
+.user-message .msg-sender { margin-left: 0; }
 .bubble {
-  max-width: 78%;
-  border-radius: 10px;
-  padding: 10px 14px;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 6px;
+  padding: 9px 12px;
 }
 .user-bubble {
-  background: #6366f1;
-  color: #fff;
+  background: transparent;
+  border: 0;
+  color: #344250;
+  padding: 0;
+}
+.user-bubble .user-sender {
+  color: #5064a4;
 }
 .agent-bubble {
-  background: #fff;
-  border: 1px solid #eceef2;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
 }
+.agent-bubble.is-summary {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+.agent-bubble { color: #2d3138; }
 .msg-sender {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 6px;
+  margin: 2px 0 8px;
   font-weight: 600;
   font-size: 13px;
 }
@@ -1049,16 +1264,57 @@ function taskStatusLabel(s: string) {
   gap: 4px;
 }
 .msg-content {
-  line-height: 1.7;
+  color: #344250;
+  font-size: 13px;
+  line-height: 1.8;
   word-break: break-word;
 }
-.sys-bubble {
-  align-self: center;
+.agent-bubble :deep(pre) {
+  max-width: 660px;
+  box-sizing: border-box;
+  overflow-x: auto;
+  border: 1px solid #1c2842;
+  border-radius: 7px;
+  background: #101a2e;
+  padding: 14px;
+}
+.agent-bubble :deep(pre code) {
+  color: #dce6f7;
   font-size: 12px;
-  color: #888;
-  background: #f3f4f6;
-  padding: 4px 12px;
-  border-radius: 12px;
+  line-height: 1.65;
+}
+.agent-bubble :deep(table) {
+  display: block;
+  max-width: 660px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.agent-bubble :deep(p) { margin: 0 0 10px; }
+.agent-bubble :deep(p:last-child) { margin-bottom: 0; }
+.agent-bubble :deep(h1), .agent-bubble :deep(h2), .agent-bubble :deep(h3) { margin: 16px 0 8px; color: #24303e; }
+.agent-bubble :deep(ul), .agent-bubble :deep(ol) { margin: 7px 0; padding-left: 22px; }
+.agent-bubble :deep(blockquote) { margin: 10px 0; padding-left: 10px; border-left: 3px solid #b9cdf0; color: #566473; }
+.agent-bubble :deep(code) { border-radius: 3px; background: #eef1f5; color: #32526f; padding: 2px 4px; font-size: 11px; }
+.expand-message {
+  margin-top: 8px;
+  border: 0;
+  background: transparent;
+  color: #3171c5;
+  padding: 2px 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.expand-message:hover { color: #174f9e; text-decoration: underline; }
+.sys-bubble {
+  margin: 0 0 8px 40px;
+  max-width: 670px;
+  overflow: hidden;
+  color: #8b949e;
+  font-family: monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .code-actions {
   margin-top: 8px;
@@ -1074,35 +1330,118 @@ function taskStatusLabel(s: string) {
 
 /* 输入 */
 .input-area {
-  border-top: 1px solid #eceef2;
-  padding: 12px 16px;
-  background: #fff;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  border-top: 0;
+  padding: 25px max(28px, calc((100% - 800px) / 2)) 18px;
+  background: linear-gradient(to bottom, rgba(250,251,252,0), #fafbfc 20%);
 }
+.chat-area { position: relative; }
 .input-row {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid #cfd7df;
+  border-radius: 7px;
+  box-shadow: 0 8px 22px rgba(23,33,43,.08);
+  min-height: 106px;
+  padding: 7px 10px 8px;
+  background: #fff;
+}
+.input-row:focus-within {
+  border-color: #6594d3;
+  box-shadow: 0 0 0 3px #eaf2ff, 0 8px 22px rgba(23,33,43,.08);
 }
 .msg-input {
-  flex: 1;
+  width: 100%;
+  flex: 0 0 auto;
+  order: 2;
 }
+.msg-input :deep(.n-input-wrapper) { padding: 2px 2px 0; }
+.msg-input :deep(.n-input__textarea-el) { font-size: 13px; line-height: 1.6; min-height: 42px !important; }
+.msg-input :deep(.n-input) { background: transparent; }
+.msg-input :deep(.n-input__border),
+.msg-input :deep(.n-input__state-border) { display: none; }
 .target-btn,
 .at-btn {
   flex-shrink: 0;
-  height: 34px;
-  width: 34px;
+  height: 24px;
+  width: 24px;
   padding: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
+}
+.attachment-btn { color: #718092; }
+.paperclip-icon {
+  display: inline-block;
+  width: 9px;
+  height: 15px;
+  border: 1.6px solid currentColor;
+  border-radius: 6px;
+  transform: rotate(-42deg);
+  position: relative;
+}
+.paperclip-icon::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1.4px solid currentColor;
+  border-radius: 4px;
 }
 .send-btn {
   flex-shrink: 0;
-  height: 34px;
+  height: 27px;
+  font-size: 11px;
+}
+.send-btn :deep(.n-button__content) { gap: 5px; }
+.send-btn svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.target-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: #65717e;
+  font-size: 11px;
+  padding: 3px 5px;
+  white-space: nowrap;
+}
+.mention-icon { color: #3470c1; font-weight: 700; font-size: 13px; line-height: 1; }
+.target-chevron { color: #84909c; font-size: 12px; margin-left: 1px; line-height: 1; }
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 26px;
+  flex: 0 0 auto;
+}
+.composer-footer {
+  display: flex;
+  order: 3;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+.composer-hint {
+  color: #a1aab3;
+  font-family: monospace;
+  font-size: 10px;
 }
 
-/* 右栏 */
-.task-panel {
-  width: 240px;
+.inspector-panel {
+  width: 300px;
   border-left: 1px solid #eceef2;
   background: #fff;
   display: flex;
@@ -1110,22 +1449,49 @@ function taskStatusLabel(s: string) {
   height: 100%;
   overflow: hidden;
 }
-.panel-half {
+.inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+  padding: 0 14px 0 16px;
+  border-bottom: 1px solid #eceef2;
+  font-size: 14px;
+  font-weight: 600;
+}
+.panel-section {
+  padding: 14px 16px;
+}
+.panel-third {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 14px 16px 0;
+  padding-bottom: 12px;
   overflow: hidden;
 }
-.panel-half + .panel-half {
+.panel-third + .panel-third {
   border-top: 1px solid #eceef2;
+}
+.panel-title-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
 }
 .panel-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding-bottom: 12px;
+  padding-right: 2px;
+}
+.invite-agent-btn {
+  flex: 0 0 auto;
+  margin-top: 10px;
+}
+.task-composer {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
 }
 .task-item {
   padding: 8px;
@@ -1316,5 +1682,28 @@ function taskStatusLabel(s: string) {
 
 .artifact-pdf {
   width: 100%; height: 70vh; border: none; border-radius: 6px; background: #fff;
+}
+
+@media (max-width: 900px) {
+  .inspector-panel {
+    width: min(320px, 42vw);
+  }
+  .sync-state { display: none; }
+}
+
+@media (max-width: 640px) {
+  .chat-head { padding: 0 10px; }
+  .project-crumb { display: none; }
+  .task-context { width: calc(100% - 24px); margin-top: 10px; }
+  .msg-box { padding: 16px 12px; }
+  .input-area { padding: 10px 12px 12px; }
+  .inspector-panel {
+    position: absolute;
+    z-index: 20;
+    right: 0;
+    top: 0;
+    width: min(340px, 88vw);
+    box-shadow: -8px 0 24px rgba(24, 32, 48, 0.12);
+  }
 }
 </style>

@@ -37,6 +37,30 @@ class Project(Base):
     sessions: Mapped[list["ChatSession"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    memories: Mapped[list["ProjectMemory"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class ProjectMemory(Base):
+    """项目记忆条目：自动沉淀（kind=auto）+ 手动编辑（kind=manual）。"""
+
+    __tablename__ = "project_memories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), default="auto")  # auto/manual
+    title: Mapped[str] = mapped_column(String(120), nullable=False)  # ≤60 字（写入层截断）
+    content: Mapped[str] = mapped_column(Text, nullable=False)  # 结论正文（≤600 字/条）
+    tags: Mapped[str | None] = mapped_column(String(255), nullable=True)  # 逗号分隔，预留检索加权
+    source_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 来源根任务，用于去重
+    pinned: Mapped[bool] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+    project: Mapped["Project"] = relationship(back_populates="memories")
 
 
 class KeyEntry(Base):

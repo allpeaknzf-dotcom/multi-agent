@@ -35,3 +35,8 @@ __pycache__/
 
 # 系统
 .DS_Store
+
+# 调试/临时产物
+.playwright-cli/
+/frontend/session-*.png
+/session-current.png

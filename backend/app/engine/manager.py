@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import time
@@ -30,7 +31,7 @@ from ..providers.base import ChatMessage, ProviderError
 from ..providers.registry import build_provider
 from ..tools.executor.runner import run_code
 from .event_bus import EventBus, event_bus
-from .memory import build_context
+from .memory import build_context, build_memory_blocks, save_memory_entry
 from .orchestrator import OrchestratorService
 from .protocol import (
     EVT_AGENT_TYPING,
@@ -207,14 +208,13 @@ class ChatManager:
 
         provider = build_provider(agent)
 
-        # 注入项目长期记忆，让 Agent 感知历史结论
+        # 注入项目长期记忆（分层：核心常驻 + 关键词检索），让 Agent 感知历史结论
         system = agent.system_prompt
-        project = self.db.get(Project, session.project_id)
-        if project and project.memory:
-            memory_block = f"【项目长期记忆（历史结论）】\n{project.memory[:4000]}"
-            system = (
-                f"{system}\n\n{memory_block}" if system else memory_block
-            )
+        memory_block = build_memory_blocks(
+            self.db, session.project_id, query=input_text
+        )
+        if memory_block:
+            system = f"{system}\n\n{memory_block}" if system else memory_block
 
         result = await provider.chat(
             messages,
@@ -481,8 +481,8 @@ class ChatManager:
                 parent_id=root.id,
                 meta={"task_id": root.id},
             )
-            # 沉淀到项目记忆
-            self._save_project_memory(session, task_description, final)
+            # 沉淀到项目记忆（空值保护 + 标题截断 + 按根任务去重）
+            self._save_project_memory(session, root, final)
 
         root.status = TASK_DONE
         self.db.commit()
@@ -1311,18 +1311,19 @@ class ChatManager:
 
     # ---------- 项目记忆 ----------
     def _save_project_memory(
-        self, session: ChatSession, task_title: str, result_text: str
+        self, session: ChatSession, root: Task, result_text: str
     ) -> None:
-        project = self.db.get(Project, session.project_id)
-        if not project:
+        """任务完成后沉淀项目记忆：空结果不落库、标题截断、按根任务去重更新。"""
+        if not session.project_id:
             return
-        from datetime import datetime
-
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-        excerpt = result_text.strip()[:600]
-        entry = f"\n\n### {ts} · {task_title}\n{excerpt}"
-        project.memory = ((project.memory or "").rstrip() + entry)[:20000]
-        self.db.commit()
+        save_memory_entry(
+            self.db,
+            session.project_id,
+            title=root.title,
+            content=result_text,
+            source_task_id=root.id,
+            kind="auto",
+        )
 
     # ---------- 沙箱运行 ----------
     async def run_code_in_session(

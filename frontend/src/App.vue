@@ -11,6 +11,10 @@ import TemplatesView from "./views/TemplatesView.vue";
 const route = useRoute();
 const router = useRouter();
 
+function goHome() {
+  if (route.path !== "/") router.push("/");
+}
+
 const projects = ref<any[]>([]);
 const recent = ref<any[]>([]);
 const archivedRecent = ref<any[]>([]);
@@ -203,17 +207,21 @@ async function confirmRename() {
 // 删除确认
 const deleteTarget = ref<any>(null);
 const showDelete = ref(false);
+const deleteFolderCheck = ref(false);
 function startDelete(type: "project" | "session", item: any) {
-  deleteTarget.value = { type, id: item.id, name: item.name || item.title || "" };
+  deleteTarget.value = { type, id: item.id, name: item.name || item.title || "", folder_path: item.folder_path };
+  deleteFolderCheck.value = false;
   showDelete.value = true;
 }
 async function confirmDelete() {
   if (!deleteTarget.value) return;
   try {
     if (deleteTarget.value.type === "project") {
-      await api.deleteProject(deleteTarget.value.id);
+      const r = await api.deleteProject(deleteTarget.value.id, deleteFolderCheck.value);
+      window.$message?.success(r.folder_deleted ? "已删除（含本地文件夹）" : "已删除");
     } else {
       await api.deleteSession(deleteTarget.value.id);
+      window.$message?.success("已删除");
     }
     showDelete.value = false;
     load();
@@ -300,7 +308,7 @@ watch(() => route.fullPath, load);
       <n-dialog-provider>
         <div class="shell">
           <aside class="sidebar">
-            <div class="sb-brand">
+            <div class="sb-brand" title="回到首页" @click="goHome">
               <AppLogo :size="26" />
               <span>Multi-agent</span>
             </div>
@@ -789,6 +797,20 @@ watch(() => route.fullPath, load);
               确定删除{{ deleteTarget?.type === "project" ? "项目" : "会话" }}「<b>{{ deleteTarget?.name }}</b>」吗？
               其下所有消息、任务将一并删除，且不可恢复。
             </p>
+            <div v-if="deleteTarget?.type === 'project'" style="margin-top:12px">
+              <template v-if="deleteTarget.folder_path">
+                <div style="color:#999;font-size:12px">
+                  绑定目录由你管理，删除项目不会影响：<b style="color:#666">{{ deleteTarget.folder_path }}</b>
+                </div>
+              </template>
+              <template v-else>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                  <input type="checkbox" v-model="deleteFolderCheck" />
+                  <span>同时删除项目文件夹（含产物）</span>
+                </label>
+                <div style="color:#999;font-size:12px;margin-top:4px">删除后不可恢复。未绑定目录的项目产物默认保存在 ~/Multi-agent/{{ deleteTarget.name }}</div>
+              </template>
+            </div>
             <template #footer>
               <n-space justify="end">
                 <n-button @click="showDelete = false">取消</n-button>
@@ -824,6 +846,12 @@ watch(() => route.fullPath, load);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.5px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 8px;
+}
+.sb-brand:hover {
+  color: #4f46e5;
 }
 .sb-actions {
   padding: 0 12px 10px;

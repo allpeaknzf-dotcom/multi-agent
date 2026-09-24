@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-agent 设置原型</title>
+    <link rel="stylesheet" href="./proposal-pages.css" />
+  </head>
+  <body>
+    <div class="settings-shell">
+      <aside class="settings-sidebar">
+        <a class="simple-brand" href="./home.html"><img src="../frontend/public/logo.png" alt="Multi-agent" /><span>Multi-agent</span></a>
+        <a class="back-link" href="./home.html">返回应用</a>
+        <nav class="settings-nav" aria-label="设置导航">
+          <p>管理</p>
+          <a class="selected" href="./settings.html">Agent 管理</a>
+          <a href="./settings.html">API Key 管理</a>
+          <a href="./settings.html">岗位模板</a>
+          <p>通用</p>
+          <a href="./settings.html">归档与恢复</a>
+        </nav>
+      </aside>
+      <main class="simple-main settings-main">
+        <header class="page-header">
+          <div><p class="page-kicker">管理</p><h1>Agent 管理</h1></div>
+          <button class="primary-action header-action" type="button">新建 Agent</button>
+        </header>
+        <div class="settings-toolbar"><label class="inline-search"><input placeholder="搜索 Agent" aria-label="搜索 Agent" /></label><button class="filter-button" type="button">全部 Provider</button></div>
+        <section class="agent-list" aria-label="Agent 列表">
+          <a href="./settings.html"><span class="agent-avatar blue-agent">O</span><span><strong>Orion</strong><small>任务主理人</small></span><em>gpt-5.2</em><i class="connection ok">正常</i><b>...</b></a>
+          <a href="./settings.html"><span class="agent-avatar teal-agent">D</span><span><strong>Delta</strong><small>数据分析</small></span><em>deepseek-v4</em><i class="connection ok">正常</i><b>...</b></a>
+          <a href="./settings.html"><span class="agent-avatar orange-agent">C</span><span><strong>Cirrus</strong><small>后端工程师</small></span><em>claude-sonnet-4</em><i class="connection ok">正常</i><b>...</b></a>
+          <a href="./settings.html"><span class="agent-avatar rose-agent">N</span><span><strong>Nori</strong><small>稳定性工程师</small></span><em>gpt-4.1</em><i class="connection warn">待检查</i><b>...</b></a>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

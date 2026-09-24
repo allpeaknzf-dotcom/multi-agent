@@ -135,8 +135,28 @@ def delete_project(
     folder_deleted = False
     if delete_folder:
         folder_deleted = manager.delete_project_folder(project_id)
-    db.delete(p)  # 级联删除会话/消息/任务
+    # 级联删除前先取本项目记忆 id，删除后清理 FTS 索引（独立表无触发器，避免残留孤儿索引）
+    from sqlalchemy import text as _text
+
+    mem_ids = [
+        r[0]
+        for r in db.execute(
+            _text("SELECT id FROM project_memories WHERE project_id = :pid"),
+            {"pid": project_id},
+        ).all()
+    ]
+    db.delete(p)  # 级联删除会话/消息/任务/记忆
     db.commit()
+    if mem_ids:
+        from sqlalchemy import bindparam
+
+        db.execute(
+            _text(
+                "DELETE FROM project_memories_fts WHERE rowid IN :ids"
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"ids": tuple(mem_ids)},
+        )
+        db.commit()
     return {"ok": True, "folder_deleted": folder_deleted}
 
 
@@ -173,28 +193,87 @@ def rename_project(
     return p
 
 
-# ---------- 项目记忆 ----------
-@router.get("/api/projects/{project_id}/memory", response_model=schemas.ProjectOut)
-def get_project_memory(project_id: int, db: DbSession = Depends(get_session)):
-    p = db.get(models.Project, project_id)
-    if not p:
+# ============================================================
+# Project Memories（条目化：列表 / 新建 manual / 更新 / 删除）
+# ============================================================
+@router.get(
+    "/api/projects/{project_id}/memories",
+    response_model=list[schemas.ProjectMemoryOut],
+)
+def list_project_memories(project_id: int, db: DbSession = Depends(get_session)):
+    if not db.get(models.Project, project_id):
         raise HTTPException(404, "项目不存在")
-    return p
+    return (
+        db.query(models.ProjectMemory)
+        .filter(models.ProjectMemory.project_id == project_id)
+        .order_by(
+            models.ProjectMemory.pinned.desc(),
+            models.ProjectMemory.updated_at.desc(),
+        )
+        .all()
+    )
 
 
-@router.put("/api/projects/{project_id}/memory", response_model=schemas.ProjectOut)
-def update_project_memory(
+@router.post(
+    "/api/projects/{project_id}/memories",
+    response_model=schemas.ProjectMemoryOut,
+)
+def create_project_memory(
     project_id: int,
+    body: schemas.ProjectMemoryCreate,
+    db: DbSession = Depends(get_session),
+):
+    if not db.get(models.Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    from ..engine.memory import _sync_fts
+
+    entry = models.ProjectMemory(
+        project_id=project_id,
+        kind="manual",
+        title=body.title.strip()[:120] or "未命名",
+        content=body.content.strip(),
+        tags=body.tags,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    _sync_fts(db, entry.id, entry.title, entry.content)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.put("/api/memories/{memory_id}", response_model=schemas.ProjectMemoryOut)
+def update_project_memory(
+    memory_id: int,
     body: schemas.ProjectMemoryUpdate,
     db: DbSession = Depends(get_session),
 ):
-    p = db.get(models.Project, project_id)
-    if not p:
-        raise HTTPException(404, "项目不存在")
-    p.memory = body.memory
+    entry = db.get(models.ProjectMemory, memory_id)
+    if not entry:
+        raise HTTPException(404, "记忆不存在")
+    from ..engine.memory import _sync_fts
+
+    if body.title is not None:
+        entry.title = body.title.strip()[:120] or entry.title
+    if body.content is not None:
+        entry.content = body.content.strip()
+    if body.pinned is not None:
+        entry.pinned = body.pinned
     db.commit()
-    db.refresh(p)
-    return p
+    _sync_fts(db, entry.id, entry.title, entry.content)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.delete("/api/memories/{memory_id}")
+def delete_project_memory(memory_id: int, db: DbSession = Depends(get_session)):
+    from ..engine.memory import delete_memory_entry
+
+    if not delete_memory_entry(db, memory_id):
+        raise HTTPException(404, "记忆不存在")
+    return {"ok": True}
 
 
 # ============================================================
